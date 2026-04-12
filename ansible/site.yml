@@ -1,0 +1,7 @@
+#--------------------------------------------------------------------------------#
+# Setup openstack Network and security groups
+#--------------------------------------------------------------------------------#
+
+- import_playbook: playbooks/ncs/01-provision_network.yml
+- import_playbook: playbooks/ncs/02-provision_k3s_network.yml
+- import_playbook: playbooks/ncs/03-provision_security_groups.yml

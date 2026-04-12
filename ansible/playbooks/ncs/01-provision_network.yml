@@ -1,0 +1,53 @@
+---
+- name: Provision Dedicated VLAN 20 Provider Network
+  hosts: localhost
+  gather_facts: false
+  vars:
+    external_network_name: "public-vlan20"
+    physical_network_name: "physnet1" # Must match 'bridge_mappings' in your Neutron config
+    vlan_id: 20
+    
+    # Physical VLAN 20 details
+    external_cidr: "172.16.100.0/24"
+    external_gateway: "172.16.100.1"
+    
+    # Full pool usage: .2 to .254 (leaving .1 for the physical gateway)
+    fip_pool_start: "172.16.100.2"
+    fip_pool_end: "172.16.100.254"
+
+  tasks:
+    # 1. Create the Network Container with VLAN Tagging
+    - name: Create External VLAN Network
+      openstack.cloud.network:
+        state: present
+        name: "{{ external_network_name }}"
+        external: true
+        shared: true 
+        provider_network_type: vlan
+        provider_physical_network: "{{ physical_network_name }}"
+        provider_segmentation_id: "{{ vlan_id }}"
+
+    # 2. Create the External Subnet with Local DNS Priority
+    - name: Create External Subnet
+      openstack.cloud.subnet:
+        state: present
+        network_name: "{{ external_network_name }}"
+        name: "{{ external_network_name }}-subnet"
+        cidr: "{{ external_cidr }}"
+        gateway_ip: "{{ external_gateway }}"
+        allocation_pool_start: "{{ fip_pool_start }}"
+        allocation_pool_end: "{{ fip_pool_end }}"
+        enable_dhcp: true # Safe to enable as OpenStack owns this isolated VLAN
+        dns_nameservers:
+          - 172.16.100.1 # Physical Router handles local .lan/.local domains
+          - 1.1.1.1      # Upstream Failover
+          - 8.8.8.8
+
+    # 3. Create Router to bridge Private to External
+    - name: Create Virtual Router
+      openstack.cloud.router:
+        state: present
+        name: "main-gateway-router"
+        network: "{{ external_network_name }}"
+        external_fixed_ips:
+          - subnet: "{{ external_network_name }}-subnet"
