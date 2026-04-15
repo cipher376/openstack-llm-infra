@@ -30,6 +30,7 @@
         - { proto: 'tcp', port_min: 6443, port_max: 6443, desc: 'K3s API' }
         - { proto: 'tcp', port_min: 2379, port_max: 2380, desc: 'etcd HA' }
         - { proto: 'icmp', port_min: -1, port_max: -1, desc: 'Cilium Health Ping' }
+        - { proto: 'tcp', port_min: 22, port_max: 22, desc: 'ssh' }
 
     # 2. Security Group: Vault (Standalone / Multi-Cloud Hub)
     - name: Create Vault Security Group

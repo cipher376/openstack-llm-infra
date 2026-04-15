@@ -1,0 +1,3 @@
+external_network_name: "public"
+local_public_key: "/home/antiamoah890/.ssh/id_ed255129_k3s.pub"
+local_private_key: "/home/antiamoah890/.ssh/id_ed255129_k3s"

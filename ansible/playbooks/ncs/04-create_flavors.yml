@@ -1,0 +1,97 @@
+---
+- name: Create OpenStack Flavors for AI Cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  tasks:
+    - name: Create Micro Flavor (Low-resource utilities)
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "standard.micro"
+        ram: 1024
+        vcpus: 1
+        disk: 10
+        is_public: true
+
+    - name: Create Small Flavor (Standard API services)
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "standard.small"
+        ram: 2048
+        vcpus: 1
+        disk: 20
+        is_public: true
+
+    - name: Create Medium Flavor (Docker/K8s Workers)
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "standard.medium"
+        ram: 4096
+        vcpus: 2
+        disk: 40
+        is_public: true
+
+    - name: Create Large Flavor (Database/Heavy Apps)
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "standard.large"
+        ram: 8192
+        vcpus: 4
+        disk: 0
+        is_public: true
+        extra_specs: {}
+        
+    - name: Create Standard Master Flavor
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "k3s.master"
+        ram: 4096
+        vcpus: 2
+        disk: 0
+        is_public: true
+
+    - name: Create Standard Worker Flavor
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "k3s.worker"
+        ram: 8192
+        vcpus: 4
+        disk: 0
+        is_public: true
+        extra_specs: {}
+          
+
+    - name: Create Standard Worker Flavor
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "k3s.worker-heavy"
+        ram: 16384
+        vcpus: 6
+        disk: 0
+        is_public: true
+        extra_specs: {}
+
+    - name: Create AI/GPU Flavor (Legion optimized)
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "ai.gpu6gb_01"
+        ram: 16384
+        vcpus: 8
+        disk: 60
+        is_public: true
+        # Metadata to ensure this VM lands on a host with a GPU
+        extra_specs:
+          "pci_passthrough:alias": "nvidia_gpu6gb:1"
+          "aggregate_instance_extra_specs:gpu": "true"
+
+
+    - name: Create Heavy Inference Flavor 
+      openstack.cloud.compute_flavor:
+        state: present
+        name: "ai.inference"
+        ram: 32768
+        vcpus: 12
+        disk: 0
+        is_public: true
+        extra_specs: {}

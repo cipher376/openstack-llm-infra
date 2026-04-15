@@ -31,7 +31,7 @@
           - 1.1.1.1
         state: present
   
-
+    #3. Attach subnet to the gateway
     - name: Connect Private Subnet to Gateway
       openstack.cloud.router:
         state: present
@@ -39,3 +39,4 @@
         interfaces: 
           - "{{subnet_name}}"
     
+        

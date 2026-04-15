@@ -1,0 +1,15 @@
+#--------------------------------------------------------------------------------#
+# Setup openstack Network and security groups
+#--------------------------------------------------------------------------------#
+
+- import_playbook: playbooks/ncs/00-common.yml
+- import_playbook: playbooks/ncs/01-provision_network.yml
+- import_playbook: playbooks/ncs/02-provision_k3s_network.yml
+- import_playbook: playbooks/ncs/03-provision_security_groups.yml
+
+#--------------------------------------------------------------------------------#
+# Prepare environments and create deploy vms
+#--------------------------------------------------------------------------------#
+- import_playbook: playbooks/ncs/04-create_flavors.yml
+- import_playbook: playbooks/ncs/05-upload_cloud_images.yml
+- import_playbook: playbooks/ncs/06-provision_k3s_vms.yml

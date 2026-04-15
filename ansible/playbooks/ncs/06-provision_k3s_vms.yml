@@ -1,0 +1,191 @@
+---
+- name: Provision K3s AI Cluster VMs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../../../secrets/vault.yml
+    - ../../vars.yml
+  vars:
+    # Adjust these to match the images/flavors you have uploaded to OpenStack
+    image_name: "Ubuntu-24.04-Minimal"
+    private_net: "k3s-private-net"
+    security_group: "sg-k3s-internal"
+    worker_names:
+      - "k3s-worker-01"
+      - "gpu-worker-01"
+    master_ssh_dir: "/home/ubuntu/.ssh"
+    worker_key_name: "k3s-worker-key"
+    keypair_name: "k3s-cluster-key"
+
+  tasks:
+    # =========================================================================
+    # 1. CREATE KEYPAIR IN OPENSTACK (OPTIONAL)
+    # =========================================================================
+    - name: Create SSH keypair in OpenStack for cluster nodes
+      openstack.cloud.keypair:
+        name: "{{ keypair_name }}"
+        public_key_file: "{{ local_public_key }}"
+        state: present
+      register: cluster_keypair
+
+    - name: Create k3-master-01 bootable volume from image
+      openstack.cloud.volume:
+        name: "k3-master-01-vol"
+        image: "{{image_name}}"
+        volume_type: "ncs-nvme"
+        size: 40
+        is_bootable: true
+        wait: yes
+
+    - name: Create K3s Master
+      openstack.cloud.server:
+        state: present
+        name: "k3s-master-01"
+        flavor: "k3s.master" # Use a flavor with at least 4GB RAM
+        network: "{{ private_net }}"
+        boot_volume: "k3-master-01-vol"
+        key_name: "{{keypair_name}}"
+        security_groups: 
+          - sg-management
+          - "{{ security_group }}"
+        auto_ip: yes # We will assign a Floating IP 
+        config_drive: yes
+        userdata: |
+          ssh_authorized_keys:
+            - {{ ssh_public_key }}
+          - chown -R ubuntu:ubuntu /home/ubuntu
+          - chmod 755 /home/ubuntu
+          - echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-ansible-users
+        wait: yes  # This pauses Ansible until the VM is 'ACTIVE'
+        timeout: 600 # Wait up to 10 minutes
+      register: master_server
+
+    - name: Extract master public IP from return structure
+      set_fact:
+        master_public_ip: >-
+          {{
+            master_server.server.addresses.values() | flatten | 
+            selectattr('OS-EXT-IPS:type', 'equalto', 'floating') | 
+            map(attribute='addr') | first | default('No Floating IP Found')
+          }}
+
+    - name: Fail if no public IP found
+      fail:
+        msg: "Could not determine master public IP from {{ master_server }}"
+      when: master_public_ip is not defined or master_public_ip == ""
+
+    - name: Wait for SSH to be ready on master
+      wait_for:
+        host: "{{ master_public_ip }}"
+        port: 22
+        timeout: 300
+        delay: 10
+     
+     
+    - name: Add master to temporary inventory
+      add_host:
+        name: "{{ master_public_ip }}"
+        groups: master_host
+        ansible_user: ubuntu
+        ansible_ssh_private_key_file: "{{ local_private_key }}"
+        ansible_python_interpreter: /usr/bin/python3
+        private_ip: "{{ master_public_ip }}"
+
+    # =========================================================================
+    # 3. GENERATE WORKER-SPECIFIC SSH KEY ON MASTER & FETCH PUBLIC KEY
+    # =========================================================================
+    - name: Generate dedicated SSH key for workers on the master
+      delegate_to: "{{ master_public_ip }}"
+      remote_user: ubuntu
+      vars:
+        ansible_connection: ssh
+        ansible_ssh_private_key_file: "{{ local_private_key }}"
+      block:
+        - name: Ensure .ssh directory exists
+          file:
+            path: "{{ master_ssh_dir }}"
+            state: directory
+            mode: "0700"
+            owner: ubuntu
+            group: ubuntu
+          
+
+        - name: Generate worker-specific SSH key (no passphrase)
+          openssh_keypair:
+            path: "{{ master_ssh_dir }}/{{ worker_key_name }}"
+            type: ed25519
+            size: 256
+            force: no
+            mode: "0600"
+          register: worker_key
+
+        - name: Read the generated public key
+          slurp:
+            src: "{{ master_ssh_dir }}/{{ worker_key_name }}.pub"
+          register: worker_public_key_b64
+
+        - name: Set fact with the worker public key
+          set_fact:
+            worker_public_key: "{{ worker_public_key_b64.content | b64decode }}"
+    
+    - name: Create Data Volume on Legion Host
+      openstack.cloud.volume:
+        state: present
+        size: 100
+        volume_type: "ncs-nvme"
+        name: "gpu-worker-local-storage"
+        display_name: "gpu-worker-local-storage"
+        wait: yes  
+        timeout: 60 
+      register: legion_volume
+
+    - name: Create AI GPU Worker
+      openstack.cloud.server:
+        state: present
+        name: "gpu-worker-01"
+        image: "{{image_name}}"
+        flavor: "ai.gpu6gb_01" # Ensure this flavor has GPU passthrough configured
+        network: "{{ private_net }}"
+        security_groups: ["{{ security_group }}"]
+        key_name: "{{keypair_name}}"
+        config_drive: yes
+        auto_ip: no
+        volumes:
+          - "gpu-worker-local-storage"
+        userdata: |
+          #cloud-config
+          ssh_authorized_keys:
+            - {{ worker_public_key }}
+          runcmd:
+            - apt-get update
+            - apt-get install -y ubuntu-drivers-common
+            - ubuntu-drivers autoinstall
+
+
+    - name: Create k3-worker-01 bootable volume from image
+      openstack.cloud.volume:
+        name: "k3-worker-01-vol"
+        image: "{{image_name}}"
+        volume_type: "ncs-nvme"
+        size: 100
+        is_bootable: true
+        wait: yes
+
+    - name: Create k3s worker 
+      openstack.cloud.server:
+        state: present
+        name: "k3s-worker-01"
+        flavor: "k3s.worker" 
+        key_name: "{{keypair_name}}"
+        terminate_volume: yes # Deletes the volume when the VM is deleted
+        boot_volume: "k3-worker-01-vol"
+        network: "{{ private_net }}"
+        security_groups: ["{{ security_group }}"]
+        config_drive: yes
+        auto_ip: no
+        userdata: |
+          #cloud-config
+          ssh_authorized_keys:
+            - {{ worker_public_key }}
+

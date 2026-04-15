@@ -1,0 +1,20 @@
+---
+- name: Provision Dedicated VLAN 20 Provider Network
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+#=========================================================================
+# Isolate GPU node and disk to reduce latency 
+# Ensure vm and volume land in the same node using host_aggregate and AZ
+#=========================================================================
+    - name: Create Legion GPU Host Aggregate and assign to AZ
+      openstack.cloud.host_aggregate:
+        state: present
+        name: "legion-gpu-host"
+        availability_zone: "nova"
+        hosts:
+          - "node-01" 
+        metadata:
+          gpu: "true"
+          type: "gaming-laptop"
