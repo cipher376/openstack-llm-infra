@@ -19,21 +19,21 @@ provider "openstack" {
 resource "openstack_compute_flavor_v2" "m1_micro_boot" {
   name      = "m1.micro.boot"
   ram       = 512
-  vcpus     = 0.5
+  vcpus     = 1
   disk      = 8
   is_public = true
 }
 resource "openstack_compute_flavor_v2" "m1_micro" {
   name      = "m1.micro"
   ram       = 512
-  vcpus     = 0.5
+  vcpus     = 1
   disk      = 0
   is_public = true
 }
 # Small Flavor (Standard API services)
 resource "openstack_compute_flavor_v2" "m1_mini_boot" {
-  name      = "m1.small.boot"
-  ram       = 1048
+  name      = "m1.mini.boot"
+  ram       = 1024
   vcpus     = 1
   disk      = 10
   is_public = true
@@ -41,8 +41,8 @@ resource "openstack_compute_flavor_v2" "m1_mini_boot" {
 
 # Small Flavor (Standard API services)
 resource "openstack_compute_flavor_v2" "m1_mini" {
-  name      = "m1.small"
-  ram       = 1048
+  name      = "m1.mini"
+  ram       = 1024
   vcpus     = 1
   disk      = 0
   is_public = true
@@ -87,7 +87,7 @@ resource "openstack_compute_flavor_v2" "m1_medium" {
 
 # Medium Flavor (Docker/K8s Workers)
 resource "openstack_compute_flavor_v2" "m1_large_boot" {
-  name      = "m1.medium.boot"
+  name      = "m1.large.boot"
   ram       = 8192
   vcpus     = 3
   disk      = 40
@@ -96,7 +96,7 @@ resource "openstack_compute_flavor_v2" "m1_large_boot" {
 
 # Standard Master Flavor for K3s
 resource "openstack_compute_flavor_v2" "m1_large" {
-  name      = "m1.medium"
+  name      = "m1.large"
   ram       = 8192
   vcpus     = 3
   disk      = 0
@@ -137,7 +137,7 @@ resource "openstack_compute_flavor_v2" "ai_gpu6gb_01_boot" {
 }
 
 # Super Heavy Inference Flavor
-resource "openstack_compute_flavor_v2" "ai_inference.boot" {
+resource "openstack_compute_flavor_v2" "ai_inference_boot" {
   name      = "ai.inference.boot"
   ram       = 32768
   vcpus     = 12

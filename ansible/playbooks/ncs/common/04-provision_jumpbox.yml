@@ -8,11 +8,16 @@
     - ../../../secrets/vault.yml   
     - ../../../vars.yml    
   tags:
-    - blue-print
+    - jumpbox
   tasks:
-    - name: Deploy the blue-print
+    - name: Deploy the jumpbox
       community.general.terraform:
-        project_path: "../../../../terraform/blue-print"
+        project_path: "../../../../terraform/jumpbox"
         state: present
         force_init: yes
+        variables:
+          auth_url: "{{ os_auth_url }}"          # from your vars.yml or env
+          region: "{{ os_region_name }}"         # from your vars.yml
+          image_uuid: "{{ubuntu_minimal_uuid}}"
+          ssh_key_file: "{{local_public_key}}"
         

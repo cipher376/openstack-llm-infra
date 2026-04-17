@@ -1,6 +1,16 @@
+os_region_name: RegionOne
+os_auth_url: http://mycloud.lan:5000/v3
+
 external_network_name: "public"
-local_public_key: "/home/antiamoah890/.ssh/id_ed255129_k3s.pub"
-local_private_key: "/home/antiamoah890/.ssh/id_ed255129_k3s"
+local_public_key: "/home/antiamoah890/.ssh/id_ed25519_cluster.pub"
+local_private_key: "/home/antiamoah890/.ssh/id_ed25519_cluster"
+ubuntu_minimal_uuid: "e46293b4-bdc6-419c-9150-e7d0edb767e5"
+
+
+#Management vault 
+mgmt_vault_ipv4: "10.10.10.100"
+mgmt_vault_sg: "mgmt-vault-sg"
+mgmt_net: "mgmt_private_net"
 
 # kubernetes
 pod_cidr: "10.244.0.0/16"

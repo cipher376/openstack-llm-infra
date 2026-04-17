@@ -1,0 +1,44 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup compute flavors for the infrastructure
+#--------------------------------------------------------------------------------#
+- name: Deploy HC Vault
+  hosts: localhost
+  vars_files: 
+    - "../../../secrets/vault.yml" 
+    - "../../../vars.yml"    
+  tags:
+    - vault
+    - mgmt-vault
+  vars:
+    vault_addr: "http://127.0.0.1:8200"
+    local_creds_path: "./vault_secrets/mgmt_vault_creds.yml"
+  
+  tasks:
+
+    - name: Create management vault
+      community.general.terraform:
+        project_path: "../../../../terraform/mgmt-vault"
+        state: present
+        force_init: yes
+        variables:
+          auth_url: "{{ os_auth_url }}"          # from your vault.yml or env
+          region: "{{ os_region_name }}"         # from your vars.yml
+          vm_ipv4: "{{ mgmt_vault_ipv4 }}"       # matches variable name
+          ssh_key_file: "{{ local_public_key }}" # matches variable name
+          mgmt_vault_sg: "{{ mgmt_vault_sg }}" # list of strings
+          mgmt_net: "{{ mgmt_net }}" 
+          image_uuid: "{{ ubuntu_minimal_uuid }}"
+          
+    # --- PHASE 1: OS HARDENING ---
+    - name: Disable Swap (Requirement for mlock)
+      command: swapoff -a
+      when: ansible_swaptotal_mb > 0
+
+    - name: Remove Swap from fstab
+      replace:
+        path: /etc/fstab
+        regexp: '^([^#].*?\sswap\s+.*)$'
+        replace: '# \1'
+
+    

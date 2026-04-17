@@ -1,63 +1,55 @@
-# resource "openstack_compute_keypair_v2" "management_key" {
-#   name       = "root-cluster-key"
-#   public_key = file("~/.ssh/id_ed25519_cluster.pub") # Path to your local public key
-# }
 
-# # 1. THE JUMPBOX
-# resource "openstack_compute_instance_v2" "jumpbox" {
-#   name            = "jumpbox"
-#   image_name      = var.jumpbox_image
-#   flavor_name     = var.jumpbox_flavour
-#   key_pair        = openstack_compute_keypair_v2.management_key.name
-#   security_groups = [openstack_networking_secgroup_v2.jumpbox_sg.name]
-
-#   network { uuid = openstack_networking_network_v2.mgmt_net.id }
-# }
-
-# resource "openstack_networking_floatingip_v2" "fip_jump" { pool = "public" }
-# resource "openstack_compute_floatingip_associate_v2" "fip_assoc" {
-#   floating_ip = openstack_networking_floatingip_v2.fip_jump.address
-#   instance_id = openstack_compute_instance_v2.jumpbox.id
-# }
-
-# output "jumpbox_ip" { value = openstack_networking_floatingip_v2.fip_jump.address }
-
-
-
-
-# 1. Define the Security Group for the Jump Box
-resource "openstack_networking_secgroup_v2" "jumpbox_sg" {
-  name        = "jumpbox-secgroup"
-  description = "Allow SSH from anywhere and internal management"
+terraform {
+  required_providers {
+    openstack = {
+      source  = "terraform-provider-openstack/openstack"
+      version = "~> 1.53.0"
+    }
+  }
 }
 
-resource "openstack_networking_secgroup_rule_v2" "ssh_ingress" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 22
-  port_range_max    = 22
-  remote_ip_prefix  = "0.0.0.0/0" # Consider restricting this to your Home/Office IP
-  security_group_id = openstack_networking_secgroup_v2.jumpbox_sg.id
+provider "openstack" {
+  auth_url    = var.auth_url
+  region      = "${var.region}"
+  # Authentication is typically handled via environment variables 
+  # (OS_USERNAME, OS_PASSWORD, etc.) for security.
 }
 
-# 2. Allocate a Floating IP
+# Allocate a Floating IP
 resource "openstack_networking_floatingip_v2" "jumpbox_fip" {
   pool = "public" # Match your external network name
 }
 
-# 3. Create the Jump Box Instance
+resource "openstack_blockstorage_volume_v3" "jumpbox_boot_vol" {
+  name        = "jumpbox-boot-volume"
+  size        = 20                  # Jumpbox usually needs more space for logs/binaries
+  image_id    = var.image_uuid
+  volume_type = "ncs-nvme"          # Switching to high-speed storage
+}
+
+data "openstack_networking_network_v2" "mgmt_private_net" {
+  name = "mgmt_private_net"
+}
+
+# Create the Jump Box Instance
 resource "openstack_compute_instance_v2" "jumpbox" {
   name            = "jumpbox"
-  image_name      = "Ubuntu-24.04-Minimal" # Use your verified image name/ID
-  flavor_name     = "m1.tiny"             # 1 vCPU / 512MB-1GB RAM is plenty
-  key_pair        = "k3s-cluster-key"
+  flavor_name     = "m1.micro"             # 1 vCPU / 512MB-1GB RAM is plenty
   config_drive    = true
-  security_groups = [openstack_networking_secgroup_v2.jumpbox_sg.name]
+  security_groups = ["jumpbox-sg"]
 
   network {
-    name = "private-net"
+    uuid = data.openstack_networking_network_v2.mgmt_private_net.id
   }
+
+  block_device {
+    uuid                  = openstack_blockstorage_volume_v3.jumpbox_boot_vol.id
+    source_type           = "volume"
+    destination_type      = "volume"
+    boot_index            = 0
+    delete_on_termination = false
+  }
+
 
   user_data = <<-EOF
     #cloud-config
@@ -67,7 +59,17 @@ resource "openstack_compute_instance_v2" "jumpbox" {
       - curl
       - dnsutils
       - net-tools
+      - ansible
+      - python3-openstackclient
+      - jq
+      - unzip
     hostname: jumpbox
+    users:
+      - name: ubuntu
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+        ssh_authorized_keys:
+          - ${file(var.ssh_key_file)}
     EOF
 }
 

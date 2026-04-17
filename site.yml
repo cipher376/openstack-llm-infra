@@ -4,7 +4,14 @@
 
 - import_playbook: ansible/playbooks/ncs/common/01-provision_network.yml
 - import_playbook: ansible/playbooks/ncs/common/02-create_flavors.yml
-# - import_playbook: ansible/playbooks/ncs/common/03-upload_cloud_images.yml
+- import_playbook: ansible/playbooks/ncs/common/03-upload_cloud_images.yml
+- import_playbook: ansible/playbooks/ncs/common/04-provision_jumpbox.yml
+
+#--------------------------------------------------------------------------------#
+# Deploy management vault
+#--------------------------------------------------------------------------------#
+- import_playbook: ansible/playbooks/ncs/vault/config-vault.yml
+
 
 
 #--------------------------------------------------------------------------------#

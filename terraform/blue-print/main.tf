@@ -42,7 +42,7 @@ resource "openstack_networking_subnet_v2" "public_subnet" {
     end   = "172.16.20.120"
   }
   enable_dhcp     = false # Usually false for external networks
-  dns_nameservers = ["172.16.20.1","8.8.8.8", "1.1.1.1"]
+  dns_nameservers = ["172.16.20.1", "8.8.8.8", "1.1.1.1"]
 }
 
 # 3. The Public Gateway (Router)

@@ -5,6 +5,7 @@
   gather_facts: false
   tags:
     - update-image
+    - blue-print
 
   vars:
     image_cache_dir: "/tmp/openstack_images"
