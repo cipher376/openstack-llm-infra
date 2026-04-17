@@ -15,9 +15,17 @@
         project_path: "../../../../terraform/gitlab"
         state: present
         force_init: yes
-        # variables:
-        #   ssh_public_key: "{{ ssh_public_key }}"
-        #   gitlab_vm_ipv4: "{{}}"
+        variables:
+          ssh_public_key: "{{ ssh_public_key }}"
+          # gitlab_vm_ipv4: "{{ gitlab_vm_ipv4 }}"
+    
+    # - name: Wait for cloud-init to finish
+    #   ansible.builtin.shell: cloud-init status --wait
+    #   register: cloud_init_output
+    #   failed_when: "'done' not in cloud_init_output.stdout"
+    #   changed_when: false
+    #   retries: 100
+    #   delay: 10
 
 #--------------------------------------------------------------------------------#
 # CONFIGURE GITLAB-SERVER                                                        #
@@ -36,9 +44,12 @@
     swap_size: "{{swap_size}}"
 
   tasks:
+    
     - name: "Skip play for non-GitLab hosts"
       meta: end_host
       when: ansible_host != gitlab_ip
+    
+
 
 # ------------------------------------------------------------------ #
 #  SECTION 1 — SYSTEM PREPARATION                                    #
@@ -60,47 +71,7 @@
           - apt-transport-https
         state: present
 
-# ------------------------------------------------------------------ #
-#  SECTION 2 — SWAP CONFIGURATION                                      #
-# ------------------------------------------------------------------ #
 
-    - name: Check if swapfile exists
-      stat:
-        path: /swapfile
-      register: swapfile_check
-
-    - name: Create swapfile
-      command: fallocate -l {{ swap_size }} /swapfile
-      when: not swapfile_check.stat.exists
-
-    - name: Set swapfile permissions
-      file:
-        path: /swapfile
-        mode: '0600'
-      when: not swapfile_check.stat.exists
-
-    - name: Format swapfile
-      command: mkswap /swapfile
-      when: not swapfile_check.stat.exists
-
-    - name: Enable swapfile
-      command: swapon /swapfile
-      when: not swapfile_check.stat.exists
-
-    - name: Add swapfile to fstab
-      lineinfile:
-        path: /etc/fstab
-        line: '/swapfile none swap sw 0 0'
-        state: present
-
-    - name: Verify swap is active
-      command: swapon --show
-      register: swap_status
-      changed_when: false
-
-    - name: Display swap status
-      debug:
-        msg: "{{ swap_status.stdout_lines }}"
 
 # ------------------------------------------------------------------ #
 #  SECTION 3 — GITLAB REPOSITORY                                       #

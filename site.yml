@@ -2,29 +2,28 @@
 # Setup openstack Network and security groups
 #--------------------------------------------------------------------------------#
 
-- import_playbook: ansible/playbooks/ncs/common/00-extensions.yml
 - import_playbook: ansible/playbooks/ncs/common/01-provision_network.yml
 - import_playbook: ansible/playbooks/ncs/common/02-create_flavors.yml
-- import_playbook: ansible/playbooks/ncs/common/03-upload_cloud_images.yml
+# - import_playbook: ansible/playbooks/ncs/common/03-upload_cloud_images.yml
 
 
 #--------------------------------------------------------------------------------#
 # Deploy kubernetes vms
 #--------------------------------------------------------------------------------#
-- import_playbook: ansible/playbooks/ncs/kubernetes/01-provision_k3s_network.yml
-- import_playbook: ansible/playbooks/ncs/kubernetes/02-provision_k3s_security_groups.yml
-- import_playbook: ansible/playbooks/ncs/kubernetes/03-provision_k3s_vms.yml
-- import_playbook: ansible/playbooks/ncs/kubernetes/04-install_k3s.yml
+# - import_playbook: ansible/playbooks/ncs/kubernetes/01-provision_k3s_network.yml
+# - import_playbook: ansible/playbooks/ncs/kubernetes/02-provision_k3s_security_groups.yml
+# - import_playbook: ansible/playbooks/ncs/kubernetes/03-provision_k3s_vms.yml
+# - import_playbook: ansible/playbooks/ncs/kubernetes/04-install_k3s.yml
 
 
 #--------------------------------------------------------------------------------#
 # Deploy kubernetes vms
 #--------------------------------------------------------------------------------#
-- import_playbook: ansible/playbooks/ncs/nvidia/01-install_gpu_drivers.yml
-- import_playbook: ansible/playbooks/ncs/nvidia/02-nvidia_plugin.yml
+# - import_playbook: ansible/playbooks/ncs/nvidia/01-install_gpu_drivers.yml
+# - import_playbook: ansible/playbooks/ncs/nvidia/02-nvidia_plugin.yml
 
 
 #--------------------------------------------------------------------------------#
 # Deploy kubernetes vms
 #--------------------------------------------------------------------------------#
-- import_playbook: ansible/playbooks/ncs/gitlab/01-gitlab-config.yml
+# - import_playbook: ansible/playbooks/ncs/gitlab/01-gitlab-config.yml

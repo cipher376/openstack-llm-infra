@@ -1,0 +1,18 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../../vars.yml    
+  tags:
+    - blue-print
+  tasks:
+    - name: Deploy the blue-print
+      community.general.terraform:
+        project_path: "../../../../terraform/blue-print"
+        state: present
+        force_init: yes
+        
