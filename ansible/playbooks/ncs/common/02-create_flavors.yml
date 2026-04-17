@@ -3,6 +3,8 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  tags:
+    - flavor
 
   tasks:
     - name: Create Micro Flavor (Low-resource utilities)

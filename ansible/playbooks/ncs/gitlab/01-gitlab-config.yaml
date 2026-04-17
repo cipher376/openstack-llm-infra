@@ -1,0 +1,269 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../../vars.yml    
+  tags:
+    - gitlab
+  tasks:
+    - name: Deploy gitlab vm
+      community.general.terraform:
+        project_path: "../../../../terraform/gitlab"
+        state: present
+        force_init: yes
+        # variables:
+        #   ssh_public_key: "{{ ssh_public_key }}"
+        #   gitlab_vm_ipv4: "{{}}"
+
+#--------------------------------------------------------------------------------#
+# CONFIGURE GITLAB-SERVER                                                        #
+#--------------------------------------------------------------------------------#
+- name: "Install and Configure GitLab CE"
+  hosts: gitlab_server
+  become: true
+  tags:
+    - gitlab
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../../vars.yml  
+  vars:
+    gitlab_external_url: "http://{{gitlab_vm_ipv4}}"
+    gitlab_version: "gitlab-ce"
+    swap_size: "{{swap_size}}"
+
+  tasks:
+    - name: "Skip play for non-GitLab hosts"
+      meta: end_host
+      when: ansible_host != gitlab_ip
+
+# ------------------------------------------------------------------ #
+#  SECTION 1 — SYSTEM PREPARATION                                    #
+# ------------------------------------------------------------------ #
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+
+    - name: Install GitLab dependencies
+      apt:
+        name:
+          - curl
+          - openssh-server
+          - ca-certificates
+          - tzdata
+          - perl
+          - postfix
+          - apt-transport-https
+        state: present
+
+# ------------------------------------------------------------------ #
+#  SECTION 2 — SWAP CONFIGURATION                                      #
+# ------------------------------------------------------------------ #
+
+    - name: Check if swapfile exists
+      stat:
+        path: /swapfile
+      register: swapfile_check
+
+    - name: Create swapfile
+      command: fallocate -l {{ swap_size }} /swapfile
+      when: not swapfile_check.stat.exists
+
+    - name: Set swapfile permissions
+      file:
+        path: /swapfile
+        mode: '0600'
+      when: not swapfile_check.stat.exists
+
+    - name: Format swapfile
+      command: mkswap /swapfile
+      when: not swapfile_check.stat.exists
+
+    - name: Enable swapfile
+      command: swapon /swapfile
+      when: not swapfile_check.stat.exists
+
+    - name: Add swapfile to fstab
+      lineinfile:
+        path: /etc/fstab
+        line: '/swapfile none swap sw 0 0'
+        state: present
+
+    - name: Verify swap is active
+      command: swapon --show
+      register: swap_status
+      changed_when: false
+
+    - name: Display swap status
+      debug:
+        msg: "{{ swap_status.stdout_lines }}"
+
+# ------------------------------------------------------------------ #
+#  SECTION 3 — GITLAB REPOSITORY                                       #
+# ------------------------------------------------------------------ #
+
+    - name: Check if GitLab repository already configured
+      stat:
+        path: /etc/apt/sources.list.d/gitlab_gitlab-ce.list
+      register: gitlab_repo_check
+
+    - name: Download GitLab repository script
+      get_url:
+        url: https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh
+        dest: /tmp/gitlab_repo.sh
+        mode: '0755'
+      when: not gitlab_repo_check.stat.exists
+
+    - name: Add GitLab repository
+      command: /tmp/gitlab_repo.sh
+      args:
+        creates: /etc/apt/sources.list.d/gitlab_gitlab-ce.list
+      register: repo_add
+
+    - name: Update apt cache after adding GitLab repo
+      apt:
+        update_cache: yes
+      when: repo_add.changed
+
+# ------------------------------------------------------------------ #
+#  SECTION 4 — GITLAB INSTALLATION                                     #
+# ------------------------------------------------------------------ #
+
+    - name: Check if GitLab is already installed
+      command: gitlab-ctl status
+      register: gitlab_installed
+      failed_when: false
+      changed_when: false
+
+    - name: Install GitLab CE
+      apt:
+        name: "{{ gitlab_version }}"
+        state: present
+      environment:
+        EXTERNAL_URL: "{{ gitlab_external_url }}"
+      register: gitlab_install
+      when: gitlab_installed.rc != 0
+
+    - name: Display GitLab install result
+      debug:
+        msg: "GitLab install {{ 'completed' if gitlab_install.changed | default(false) else 'already present' }}"
+
+# ------------------------------------------------------------------ #
+#  SECTION 5 — GITLAB CONFIGURATION                                    #
+# ------------------------------------------------------------------ #
+
+    - name: Ensure external URL is set correctly in gitlab.rb
+      lineinfile:
+        path: /etc/gitlab/gitlab.rb
+        regexp: "^external_url"
+        line: "external_url '{{ gitlab_external_url }}'"
+      register: gitlab_rb_changed
+
+    - name: Disable prometheus monitoring to save RAM
+      lineinfile:
+        path: /etc/gitlab/gitlab.rb
+        regexp: "^prometheus\\['enable'\\]"
+        line: "prometheus['enable'] = false"
+
+    - name: Reduce puma workers to save RAM
+      lineinfile:
+        path: /etc/gitlab/gitlab.rb
+        regexp: "^puma\\['worker_processes'\\]"
+        line: "puma['worker_processes'] = 4"
+
+    - name: Reduce sidekiq concurrency to save RAM
+      lineinfile:
+        path: /etc/gitlab/gitlab.rb
+        regexp: "^sidekiq\\['concurrency'\\]"
+        line: "sidekiq['concurrency'] = 10"
+
+    - name: Run GitLab reconfigure
+      command: gitlab-ctl reconfigure
+      register: reconfigure_result
+      when: >
+        gitlab_rb_changed.changed or
+        gitlab_install.changed | default(false)
+      failed_when: false
+
+    - name: Display reconfigure result
+      debug:
+        msg: "{{ reconfigure_result.stdout_lines | default(['reconfigure not run']) | last }}"
+      when: reconfigure_result is defined
+
+# ------------------------------------------------------------------ #
+#  SECTION 6 — VERIFICATION                                            #
+# ------------------------------------------------------------------ #
+
+    - name: Wait for GitLab to be ready
+      wait_for:
+        host: "{{ gitlab_vm_ipv4 }}"
+        port: 80
+        delay: 30
+        timeout: 300
+
+    - name: Check GitLab services status
+      command: gitlab-ctl status
+      register: gitlab_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display GitLab services
+      debug:
+        msg: "{{ gitlab_status.stdout_lines }}"
+
+    - name: Check if initial root password exists
+      stat:
+        path: /etc/gitlab/initial_root_password
+      register: root_password_file
+
+    - name: Display initial root password
+      command: cat /etc/gitlab/initial_root_password
+      register: root_password
+      changed_when: false
+      when: root_password_file.stat.exists
+
+    - name: Show login information
+      debug:
+        msg:
+          - "GitLab URL:       {{ gitlab_external_url }}"
+          - "Username:         root"
+          - "Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}"
+          - "NOTE: Change your password immediately — this file is deleted after 24 hours"
+    
+    - name: Write login info to file
+      copy:
+        dest: /tmp/gitlab_login_info.txt
+        content: |
+          GitLab URL:       {{ gitlab_external_url }}
+          Username:         root
+          Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}
+          NOTE: Change your password immediately — this file is deleted after 24 hours
+    
+    - name: Save login info to local machine
+      fetch:
+        src: /tmp/gitlab_login_info.txt
+        dest: ~/Scripts/gitlab_login_info.txt
+        flat: yes
+      
+# ------------------------------------------------------------------ #
+#  SECTION 7 — GITLAB RUNNER SETUP                                     #
+# ------------------------------------------------------------------ #
+    - name: Display runner registration instructions
+      debug:
+        msg:
+          - "================================================"
+          - "GitLab installed on VM 300 — gitlab-server"
+          - "================================================"
+          - "GitLab URL:   {{ gitlab_external_url }}"
+          - "VM IP:        {{ gitlab_vm_ipv4 }}"
+          - "================================================"
+          - "To register GPU worker as GitLab Runner:"
+          - "1. Go to {{ gitlab_external_url }}/-/admin/runners"
+          - "2. Copy the registration token"
+          - "3. Run on gpu-worker"
+          - "   gitlab-runner register --url {{ gitlab_external_url }} --token <TOKEN>"
+          - "================================================"

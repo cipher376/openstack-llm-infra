@@ -1,0 +1,263 @@
+---
+- name: "Configure invida plugin"
+  hosts: "k3s_servers"
+  become: true
+  tags:
+    - nvidia
+    - nvidia-plugin
+  environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  vars_files:
+    - ../../../vars.yml
+  vars:
+    gpu_taint_key: "dedicated"
+    gpu_taint_value: "gpu"
+    gpu_taint_effect: "NoExecute"
+
+  tasks:
+# ------------------------------------------------------------------ #
+#  SECTION 10 — NVIDIA GPU CONFIGURATION                             #
+# ------------------------------------------------------------------ #
+    - name: Detect NVIDIA GPU
+      shell: lspci | grep -i nvidia
+      register: nvidia_gpu_check
+      failed_when: false
+      changed_when: false
+      when: ansible_host != k3s_mater_01_ipv4
+
+    - name: Apply GPU Taint to gpu Node
+      kubernetes.core.k8s_taint:
+        state: present
+        name: "{{ inventory_hostname }}"
+        taints:
+          - key: "{{ gpu_taint_key }}"
+            value: "{{ gpu_taint_value }}"
+            effect: "{{ gpu_taint_effect }}"
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      delegate_to: k3s-master-01
+      when: 
+        - nvidia_gpu_check is not skipped
+        - nvidia_gpu_check.rc == 0
+
+
+    - name: Verify NVIDIA Container Toolkit is installed
+      stat:
+        path: /usr/bin/nvidia-container-runtime
+      register: nvidia_runtime_binary
+      failed_when: not nvidia_runtime_binary.stat.exists
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+      become: true
+
+    - name: Create K3s containerd config directory
+      file:
+        path: /var/lib/rancher/k3s/agent/etc/containerd
+        state: directory
+        mode: '0755'
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+      become: true
+
+    - name: Clean up old K3s/Containerd configurations
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+        - /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+      become: true
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+    
+
+    - name: Initial K3s agent restart to generate default config
+      systemd:
+        name: k3s-agent
+        state: restarted
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+      become: true
+      
+    - name: Configure NVIDIA runtime via nvidia-ctk
+      command: >
+        nvidia-ctk runtime configure --runtime=containerd --config=/var/lib/rancher/k3s/agent/etc/containerd/config.toml --set-as-default
+      become: true
+      register: ctk_result
+      changed_when: "'Successfully configured' in ctk_result.stdout"
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+
+    - name: Initial K3s agent stopped to reconfigure
+      systemd:
+        name: k3s-agent
+        state: stopped
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+      become: true
+
+    - name: Copy 99-nvidia.toml to active K3s config
+      copy:
+        src: /etc/containerd/conf.d/99-nvidia.toml
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0644'
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+      become: true
+
+    - name: Copy 99-nvidia.toml to K3s template (for persistence)
+      copy:
+        src: /etc/containerd/conf.d/99-nvidia.toml
+        dest: /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+        remote_src: yes
+        owner: root
+        group: root
+        mode: '0644'
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+      become: true
+
+
+    - name: Final K3s agent restart to apply NVIDIA runtime
+      systemd:
+        name: k3s-agent
+        state: started
+      become: true
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+
+    - name: Verify NVIDIA runtime is recognized by containerd
+      shell: "crictl info | grep -i nvidia"
+      become: true
+      register: crictl_check
+      until: crictl_check.stdout != ""
+      retries: 5
+      delay: 5
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+
+ 
+# ------------------------------------------------------------------ #
+#  SECTION 10 — NVIDIA GPU PLUGIN CONFIGURATION                             #
+# ------------------------------------------------------------------ #
+    - name: Add NVIDIA Helm repository
+      kubernetes.core.helm_repository:
+        name: nvdp
+        repo_url: "https://nvidia.github.io/k8s-device-plugin"
+      delegate_to: k3s-master-01
+      run_once: true
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Update Helm repositories
+      ansible.builtin.command: helm repo update
+      delegate_to: k3s-master-01
+      run_once: true
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+    - name: Deploy NVIDIA Device Plugin via Helm (ML Optimized)
+      kubernetes.core.helm:
+        name: nvidia-device-plugin
+        chart_ref: nvdp/nvidia-device-plugin
+        release_namespace: nvidia-device-plugin
+        create_namespace: true
+        chart_version: "0.14.5"
+        wait: yes
+        # Moving your --set flags and Tolerations into the values block
+        values:
+          runtimeClassName: "nvidia"
+          nodeSelector:
+            hardware: "gpu"
+          # This allows the plugin to run on your tainted Legion node
+          tolerations:
+            - key: "{{ gpu_taint_key }}"
+              operator: "Equal"
+              value: "{{ gpu_taint_value }}"
+              effect: "{{ gpu_taint_effect }}"
+            # Best practice: Also tolerate the standard master taints
+            - key: "node-role.kubernetes.io/master"
+              operator: "Exists"
+              effect: "NoSchedule"
+            - key: "node-role.kubernetes.io/control-plane"
+              operator: "Exists"
+              effect: "NoSchedule"
+      delegate_to: k3s-master-01
+      run_once: true
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+
+        
+    - name: Ensure GPU label is present on the Legion node
+      shell: kubectl label node {{ansible_hostname}} hardware=gpu --overwrite
+      delegate_to: k3s-master-01
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+
+    - name: Patch NVIDIA Device Plugin to Tolerate Taint
+      kubernetes.core.k8s:
+        state: patched
+        kind: DaemonSet
+        name: nvidia-device-plugin 
+        namespace: nvidia-device-plugin 
+        definition:
+          spec:
+            template:
+              spec:
+                tolerations:
+                  - key: "{{ gpu_taint_key }}"
+                    operator: "Equal"
+                    value: "{{ gpu_taint_value }}"
+                    effect: "{{ gpu_taint_effect }}"
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      delegate_to: k3s-master-01
+      run_once: true
+
+    - name: Wait for NVIDIA Device Plugin to register GPUs
+      shell: kubectl get node {{inventory_hostname}} -o jsonpath='{.status.allocatable.nvidia\.com/gpu}'
+      register: gpu_avail
+      until: gpu_avail.stdout != "" and gpu_avail.stdout != "0"
+      retries: 10
+      delay: 10
+      delegate_to: k3s-master-01
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      when: 
+        - ansible_host != k3s_mater_01_ipv4
+        - nvidia_gpu_check.rc == 0
+      
+
+    - name: Wait until NVIDIA Device Plugin has at least one Ready pod
+      shell: |
+        kubectl get daemonset nvidia-device-plugin -n nvidia-device-plugin -o json | jq '.status.numberReady // 0'
+      register: ready_count
+      until: ready_count.stdout | int > 0
+      retries: 15
+      delay: 10
+      delegate_to: k3s-master-01
+      run_once: true
+      environment:
+        KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      changed_when: false
+      failed_when: ready_count.stdout | int == 0
+
+    - name: Display plugin status
+      debug:
+        msg: "{{ ready_count.stdout  }}"
+      run_once: true
+

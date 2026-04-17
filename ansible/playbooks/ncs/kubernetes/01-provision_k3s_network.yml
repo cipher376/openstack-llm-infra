@@ -2,13 +2,16 @@
 - name: Provision OpenStack Network on NCS
   hosts: localhost
   gather_facts: false
+  tags: 
+    - k3s
+    - k3s-net
   vars:
     # Match these to your environment
     cloud_name: NCS #Ntiamoah cloud services
     network_name: k3s-private-net
     subnet_name: k3s-private-subnet
     cidr: 10.0.0.0/24
-    external_network_name: "public-vlan20"
+    external_network_name: "public"
     gateway: main-gateway-router
 
    

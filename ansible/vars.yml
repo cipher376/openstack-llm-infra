@@ -1,3 +1,19 @@
 external_network_name: "public"
 local_public_key: "/home/antiamoah890/.ssh/id_ed255129_k3s.pub"
 local_private_key: "/home/antiamoah890/.ssh/id_ed255129_k3s"
+
+# kubernetes
+pod_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+cilium_version: "1.15.5"
+cilium_lb_ip_range: "172.16.20.200/27"
+k3s_master_bind_address: "0.0.0.0"
+k3s_mater_01_float_ip: "172.16.20.231"
+k3s_mater_01_ipv4: "10.0.0.5"
+k3s_worker_01_ipv4: "10.0.0.3"
+gpu_worker_01_ipv4: "10.0.0.4"
+
+
+#Gitlab
+gitlab_vm_ipv4: "10.0.0.6" 
+swap_size: "8G"

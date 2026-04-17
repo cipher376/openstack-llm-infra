@@ -3,9 +3,12 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  tags: 
+    - k3s
+    - k3s-vm
   vars_files:
-    - ../../../secrets/vault.yml
-    - ../../vars.yml
+    - ../../../../secrets/vault.yml
+    - ../../../vars.yml
   vars:
     # Adjust these to match the images/flavors you have uploaded to OpenStack
     image_name: "Ubuntu-24.04-Minimal"
@@ -19,6 +22,13 @@
     keypair_name: "k3s-cluster-key"
 
   tasks:
+    - name: Wait for cloud-init to finish
+      ansible.builtin.shell: cloud-init status --wait
+      register: cloud_init_output
+      failed_when: "'done' not in cloud_init_output.stdout"
+      changed_when: false
+      retries: 30
+      delay: 10
     # =========================================================================
     # 1. CREATE KEYPAIR IN OPENSTACK (OPTIONAL)
     # =========================================================================
@@ -43,9 +53,11 @@
         state: present
         name: "k3s-master-01"
         flavor: "k3s.master" # Use a flavor with at least 4GB RAM
-        network: "{{ private_net }}"
         boot_volume: "k3-master-01-vol"
         key_name: "{{keypair_name}}"
+        nics:
+          - net-name: "{{ private_net }}"
+            fixed_ip: "{{k3s_mater_01_ipv4}}"
         security_groups: 
           - sg-management
           - "{{ security_group }}"
@@ -146,9 +158,11 @@
         name: "gpu-worker-01"
         image: "{{image_name}}"
         flavor: "ai.gpu6gb_01" # Ensure this flavor has GPU passthrough configured
-        network: "{{ private_net }}"
         security_groups: ["{{ security_group }}"]
         key_name: "{{keypair_name}}"
+        nics:
+          - net-name: "{{ private_net }}"
+            fixed_ip: "{{gpu_worker_01_ipv4}}"
         config_drive: yes
         auto_ip: no
         volumes:
@@ -179,8 +193,10 @@
         flavor: "k3s.worker" 
         key_name: "{{keypair_name}}"
         terminate_volume: yes # Deletes the volume when the VM is deleted
-        boot_volume: "k3-worker-01-vol"
-        network: "{{ private_net }}"
+        boot_volume: "k3-worker-01-vol" 
+        nics:
+          - net-name: "{{ private_net }}"
+            fixed_ip: "{{k3s_worker_01_ipv4}}"
         security_groups: ["{{ security_group }}"]
         config_drive: yes
         auto_ip: no
@@ -189,3 +205,7 @@
           ssh_authorized_keys:
             - {{ worker_public_key }}
 
+
+  # =========================================================================
+  # 3. Install K3s and configure Nvidia drivers 
+  # =========================================================================

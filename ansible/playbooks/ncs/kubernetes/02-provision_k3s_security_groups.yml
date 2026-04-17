@@ -2,6 +2,9 @@
 - name: Provision OpenStack Security Groups on NCS
   hosts: localhost
   gather_facts: false
+  tags: 
+    - k3s
+    - k3s-sg
   vars:
     # Match these to your environment
     cloud_name: NCS 
