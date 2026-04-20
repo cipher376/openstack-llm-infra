@@ -70,11 +70,10 @@ resource "openstack_networking_subnet_v2" "data_subnet" {
 
 resource "openstack_networking_network_v2" "k3s_net" { name = "k3s_private_net" }
 resource "openstack_networking_subnet_v2" "k3s_subnet" {
+  name      = "k3s_private_subnet"
   network_id = openstack_networking_network_v2.k3s_net.id
   cidr       = "10.10.30.0/24"
 }
-
-
 resource "openstack_networking_router_interface_v2" "mgmt_itf" {
   router_id = openstack_networking_router_v2.vpc_router.id
   subnet_id = openstack_networking_subnet_v2.mgmt_subnet.id
@@ -90,22 +89,66 @@ resource "openstack_networking_router_interface_v2" "k3s_itf" {
   subnet_id = openstack_networking_subnet_v2.k3s_subnet.id
 }
 
-# --- SECURITY GROUPS: THE FIREWALL TIERS ---
 
+#===============================================================================
+# --- SECURITY GROUPS: THE FIREWALL TIERS ---
+#===============================================================================
 # Jumpbox SG: Only SSH from your IP
 resource "openstack_networking_secgroup_v2" "jumpbox_sg" { name = "jumpbox-sg" }
-resource "openstack_networking_secgroup_rule_v2" "ssh_ext" {
-  direction         = "ingress"
-  ethertype         = "IPv4"
-  protocol          = "tcp"
-  port_range_min    = 22
-  port_range_max    = 22
-  remote_ip_prefix  = "172.16.0.0/16" # CHANGE TO YOUR HOME IP
-  security_group_id = openstack_networking_secgroup_v2.jumpbox_sg.id
+
+
+locals {
+  jumpbox_rules = [
+    { proto = "tcp",  min = 22, max = 22, remote_ip="172.16.0.0/16", desc = "ssh external" },
+    { proto = "tcp",  min = 80, max = 80, remote_ip="0.0.0.0/0", desc = "External to ngix proxy http" },
+    { proto = "tcp",  min = 443, max = 443, remote_ip="0.0.0.0/0", desc = "External to ngix proxy https" },
+    { proto = "tcp",  min = 3128, max = 3128, remote_ip="10.10.0.0/16", desc = "internal to squid to external" },
+
+  ]
 }
 
+resource "openstack_networking_secgroup_rule_v2" "jumpbox_sg_rules" {
+  for_each = { for rule in local.jumpbox_rules : rule.desc => rule }
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  security_group_id = openstack_networking_secgroup_v2.jumpbox_sg.id
+  
+  protocol          = each.value.proto
+  port_range_min    = each.value.min
+  port_range_max    = each.value.max
+  remote_ip_prefix  = each.value.remote_ip
+}
+
+#==================================================================================================================
+#Gitlab security group 
+#==================================================================================================================
+resource "openstack_networking_secgroup_v2" "gitlab_sg" { name = "gitlab-sg" }
+locals {
+  gitlab_rules = [
+    { proto = "tcp",  min = 80, max = 80, remote_ip="10.10.0.0/16", desc = "Allow bastion to access http traffic" },
+    { proto = "tcp",  min = 443, max = 443, remote_ip="10.10.0.0/16", desc = "Allow bastion to access https traffic" },
+  ]
+}
+
+resource "openstack_networking_secgroup_rule_v2" "gitlab_sg_rules" {
+  for_each = { for rule in local.gitlab_rules : rule.desc => rule }
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  security_group_id = openstack_networking_secgroup_v2.gitlab_sg.id
+  protocol          = each.value.proto
+  port_range_min    = each.value.min
+  port_range_max    = each.value.max
+}
+
+
+#==================================================================================
 # Internal SG: Only allow SSH FROM the Jumpbox
-resource "openstack_networking_secgroup_v2" "internal_sg" { name = "internal-sg" }
+resource "openstack_networking_secgroup_v2" "internal_sg" { 
+  name = "internal-sg"
+  description = "Provide shared access to the vms e.g ssh from the jump box" 
+  }
 resource "openstack_networking_secgroup_rule_v2" "ssh_from_jump" {
   direction         = "ingress"
   ethertype         = "IPv4"
@@ -116,19 +159,57 @@ resource "openstack_networking_secgroup_rule_v2" "ssh_from_jump" {
   security_group_id = openstack_networking_secgroup_v2.internal_sg.id
 }
 
-
+#==========================================================================
 
 # SeaweedFS S3 Port (8333) allowed from K3s and Data networks
-resource "openstack_networking_secgroup_rule_v2" "seaweed_s3" {
+resource "openstack_networking_secgroup_v2" "seaweedfs_sg" {
+  name        = "seaweedfs-sg"
+  description = "Security group for the the object storage (s3)"
+}
+resource "openstack_networking_secgroup_rule_v2" "s3_port" {
   direction         = "ingress"
   ethertype         = "IPv4"
   protocol          = "tcp"
   port_range_min    = 8333
   port_range_max    = 8333
-  remote_ip_prefix  = "10.0.0.0/16" # Covers all internal subnets
-  security_group_id = openstack_networking_secgroup_v2.internal_sg.id
+  remote_ip_prefix  = "10.10.0.0/16" # Covers all internal subnets
+  security_group_id = openstack_networking_secgroup_v2.seaweedfs_sg.id
 }
 
+# Master Server Port (HTTP/gRPC)
+resource "openstack_networking_secgroup_rule_v2" "master_port" {
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 9333
+  port_range_max    = 9333
+  remote_ip_prefix  = "10.10.0.0/16" # Consider restricting to your VPC CIDR
+  security_group_id = openstack_networking_secgroup_v2.seaweedfs_sg.id
+}
+
+# Volume Server Port
+resource "openstack_networking_secgroup_rule_v2" "volume_port" {
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8080
+  port_range_max    = 8080
+  remote_ip_prefix  = "10.10.0.0/16"
+  security_group_id = openstack_networking_secgroup_v2.seaweedfs_sg.id
+}
+
+# Filer Port
+resource "openstack_networking_secgroup_rule_v2" "filer_port" {
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8888
+  port_range_max    = 8888
+  remote_ip_prefix  = "10.10.0.0/16"
+  security_group_id = openstack_networking_secgroup_v2.seaweedfs_sg.id
+}
+
+#==================================================================================================
 
 # Security Group for Management Vault
 resource "openstack_networking_secgroup_v2" "mgmt_vault_sg" {
@@ -158,3 +239,71 @@ resource "openstack_networking_secgroup_rule_v2" "mgmt_vault_api" {
   remote_ip_prefix  = "10.0.0.0/8" # Internal network range
   security_group_id = openstack_networking_secgroup_v2.mgmt_vault_sg.id
 }
+
+
+#============================================================================
+
+
+
+# 1. VAULT SECURITY GROUP
+resource "openstack_networking_secgroup_v2" "cluster_vault_sg" {
+  name        = "cluster-vault-sg"
+  description = "Security group for HashiCorp Vault"
+}
+
+# Rule: Allow Vault API (8200) from the internal subnets (Management, Data, K3s)
+resource "openstack_networking_secgroup_rule_v2" "allow_vault_internal" {
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8200
+  port_range_max    = 8200
+  remote_ip_prefix  = "10.0.0.0/16" # Allows all our 10.x.x.x tiers
+  security_group_id = openstack_networking_secgroup_v2.cluster_vault_sg.id
+}
+
+# Rule: Allow SSH only from the Jump Box
+resource "openstack_networking_secgroup_rule_v2" "allow_ssh_to_vault" {
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 22
+  port_range_max    = 22
+  remote_group_id   = openstack_networking_secgroup_v2.jumpbox_sg.id
+  security_group_id = openstack_networking_secgroup_v2.cluster_vault_sg.id
+}
+
+#==============================================================================
+# KUBERNETES
+#==============================================================================
+# 1. Create the Security Group
+resource "openstack_networking_secgroup_v2" "k3s_internal" {
+  name        = "k3s-internal-sg"
+  description = "Internal cluster communication for Cilium and K3s"
+}
+
+# 2. Define the rule set in a local variable for readability
+locals {
+  k3s_rules = [
+    { proto = "udp",  min = 8472, max = 8472, desc = "VXLAN Overlay" },
+    { proto = "tcp",  min = 4240, max = 4240, desc = "Cilium Health" },
+    { proto = "tcp",  min = 6443, max = 6443, desc = "K3s API" },
+    { proto = "tcp",  min = 2379, max = 2380, desc = "etcd HA" },
+    { proto = "tcp",  min = 10250, max = 10250, desc = "kubectl logs" },
+  ]
+}
+
+# 3. Iterate through the list to create the rules
+resource "openstack_networking_secgroup_rule_v2" "k3s_internal_rules" {
+  for_each = { for rule in local.k3s_rules : rule.desc => rule }
+
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  security_group_id = openstack_networking_secgroup_v2.k3s_internal.id
+  
+  protocol          = each.value.proto
+  port_range_min    = each.value.min
+  port_range_max    = each.value.max
+  remote_ip_prefix  = "10.10.30.0/24" 
+}
+

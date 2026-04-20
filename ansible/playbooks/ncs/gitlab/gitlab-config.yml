@@ -5,8 +5,8 @@
 - name: Set up vm nodes with terraform
   hosts: localhost
   vars_files: 
-    - ../../../../secrets/vault.yml   
-    - ../../../../vars.yml    
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml    
   tags:
     - gitlab
   tasks:
@@ -16,8 +16,8 @@
         state: present
         force_init: yes
         variables:
-          ssh_public_key: "{{ ssh_public_key }}"
-          # gitlab_vm_ipv4: "{{ gitlab_vm_ipv4 }}"
+          ssh_public_key: "{{ local_public_key }}"
+          gitlab_vm_ipv4: "{{ gitlab_vm_ipv4 }}"
     
     # - name: Wait for cloud-init to finish
     #   ansible.builtin.shell: cloud-init status --wait
@@ -36,21 +36,13 @@
   tags:
     - gitlab
   vars_files: 
-    - ../../../../secrets/vault.yml   
-    - ../../../../vars.yml  
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml  
   vars:
-    gitlab_external_url: "http://{{gitlab_vm_ipv4}}"
     gitlab_version: "gitlab-ce"
-    swap_size: "{{swap_size}}"
 
   tasks:
     
-    - name: "Skip play for non-GitLab hosts"
-      meta: end_host
-      when: ansible_host != gitlab_ip
-    
-
-
 # ------------------------------------------------------------------ #
 #  SECTION 1 — SYSTEM PREPARATION                                    #
 # ------------------------------------------------------------------ #
@@ -70,9 +62,6 @@
           - postfix
           - apt-transport-https
         state: present
-
-
-
 # ------------------------------------------------------------------ #
 #  SECTION 3 — GITLAB REPOSITORY                                       #
 # ------------------------------------------------------------------ #
@@ -115,7 +104,7 @@
         name: "{{ gitlab_version }}"
         state: present
       environment:
-        EXTERNAL_URL: "{{ gitlab_external_url }}"
+        EXTERNAL_URL: "http://{{ gitlab_external_url }}"
       register: gitlab_install
       when: gitlab_installed.rc != 0
 
@@ -131,7 +120,7 @@
       lineinfile:
         path: /etc/gitlab/gitlab.rb
         regexp: "^external_url"
-        line: "external_url '{{ gitlab_external_url }}'"
+        line: "external_url 'http://{{ gitlab_external_url }}'"
       register: gitlab_rb_changed
 
     - name: Disable prometheus monitoring to save RAM
@@ -200,7 +189,7 @@
     - name: Show login information
       debug:
         msg:
-          - "GitLab URL:       {{ gitlab_external_url }}"
+          - "GitLab URL:       http://{{ gitlab_external_url }}"
           - "Username:         root"
           - "Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}"
           - "NOTE: Change your password immediately — this file is deleted after 24 hours"
@@ -209,7 +198,7 @@
       copy:
         dest: /tmp/gitlab_login_info.txt
         content: |
-          GitLab URL:       {{ gitlab_external_url }}
+          GitLab URL:       http://{{ gitlab_external_url }}
           Username:         root
           Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}
           NOTE: Change your password immediately — this file is deleted after 24 hours
@@ -217,7 +206,7 @@
     - name: Save login info to local machine
       fetch:
         src: /tmp/gitlab_login_info.txt
-        dest: ~/Scripts/gitlab_login_info.txt
+        dest: "{{secrets_path}}/gitlab_login_info.txt"
         flat: yes
       
 # ------------------------------------------------------------------ #

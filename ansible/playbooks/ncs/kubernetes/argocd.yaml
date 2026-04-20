@@ -27,7 +27,7 @@
         name: argo
         repo_url: "https://argoproj.github.io/argo-helm"
       # This ensures the repo is added to the Helm config on the master node
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
       run_once: true
 
     - name: Deploy ArgoCD via Helm
@@ -44,7 +44,7 @@
           configs:
             params:
               server.insecure: "true"
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
       run_once: true
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
@@ -62,7 +62,7 @@
           status: "True"
         wait_timeout: 300
       become: true
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       run_once: true
@@ -92,7 +92,7 @@
                   - name: argocd-server
                     port: 80
       become: true
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       run_once: true
@@ -153,7 +153,7 @@
       environment:
         KUBECONFIG: "{{ kube_config }}"
       no_log: true
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
 
     # -------------------------------------------------------------------------
     # K8s auth role — binds argocd service accounts to the policy
@@ -172,7 +172,7 @@
       environment:
         KUBECONFIG: "{{ kube_config }}"
       no_log: true
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
 
     # -------------------------------------------------------------------------
     # Seed GitLab group token into Vault KV
@@ -197,7 +197,7 @@
         password='{{ gitlab_group_token }}' \
         group='{{ gitlab_group_name }}'"
       # no_log: true
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
 
     - name: Verify secret was written to Vault KV
       ansible.builtin.shell: |
@@ -210,7 +210,7 @@
       changed_when: false
       failed_when: kv_check.rc != 0
       no_log: true
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
 
     - name: Confirm GitLab group token written
       ansible.builtin.debug:
@@ -271,7 +271,7 @@
                 remoteRef:
                   key: argocd/gitlab
                   property: password
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01
 
     
     - name: Deploy ArgoCD Root Bootstrap Application
@@ -296,4 +296,4 @@
               automated:
                 prune: true
                 selfHeal: true
-      delegate_to: k3s-master-venue
+      delegate_to: k3s-master-01

@@ -18,7 +18,7 @@
         
       # Using the 'current' symlink for Ubuntu 24.04 (Noble)
       - name: "Ubuntu-24.04-Minimal"
-        url: "https://cloud-images.ubuntu.com/minimal/releases/noble/release/current/ubuntu-24.04-minimal-cloudimg-amd64.img"
+        url: "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
         filename: "ubuntu-24-minimal.img"
         
       - name: "Debian-12-Cloud"

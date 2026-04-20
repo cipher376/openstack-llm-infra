@@ -1,7 +1,7 @@
 variable "auth_url" {
   description = "cloud api url"
   type        = string
-  default     = "http://mycloud.lan:5000/v3"
+  default     = "http://ncs-cloud.lan:5000/v3"
 }
 
 variable "jumpbox_flavour" {

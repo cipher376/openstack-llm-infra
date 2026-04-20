@@ -1,0 +1,90 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup Seaweedfs vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml    
+  tags:
+    - seaweedfs
+  tasks:
+    - name: Deploy seaweedfs vm
+      community.general.terraform:
+        project_path: "../../../../terraform/seaweedfs"
+        state: present
+        force_init: yes
+        variables:
+          ssh_public_key: "{{ local_public_key }}"
+          seaweedfs_vm_ipv4: "{{ seaweedfs_vm_ipv4 }}"
+
+
+- name: Wait for vault vm to become ready
+  hosts: seaweedfs_servers
+  gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  tags:
+    - seaweedfs
+  tasks:
+    - name: Ensure SSH is responding
+      wait_for_connection:
+        delay: 10      # Wait 10s before even trying
+        timeout: 300   # Give up after 5 mins
+
+
+- name: Install and configure seaweedfs
+  hosts: seaweedfs_servers  
+  become: yes
+  vars:
+    seaweed_version: "3.59" # Update to the latest version as needed
+    seaweed_install_dir: "/usr/local/bin"
+    seaweed_data_dir: "/var/lib/seaweedfs"
+    # Use internal IP for cluster communication, 0.0.0.0 for listening
+    bind_ip: "0.0.0.0"
+  tags:
+    - seaweedfs
+
+  tasks:
+    - name: Install dependencies
+      apt:
+        name: [tar, wget, curl]
+        state: present
+        update_cache: yes
+
+    - name: Create SeaweedFS data directory
+      file:
+        path: "{{ seaweed_data_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Download and extract SeaweedFS binary
+      unarchive:
+        src: "https://github.com/seaweedfs/seaweedfs/releases/download/{{ seaweed_version }}/linux_amd64.tar.gz"
+        dest: "{{ seaweed_install_dir }}"
+        remote_src: yes
+        creates: "{{ seaweed_install_dir }}/weed"
+
+    - name: Create Systemd service file
+      copy:
+        dest: /etc/systemd/system/seaweedfs.service
+        content: |
+          [Unit]
+          Description=SeaweedFS Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=root
+          ExecStart={{ seaweed_install_dir }}/weed server -dir={{ seaweed_data_dir }} -s3 -filer -ip={{ bind_ip }}
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd and start SeaweedFS
+      systemd:
+        name: seaweedfs
+        state: started
+        enabled: yes
+        daemon_reload: yes

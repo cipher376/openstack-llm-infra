@@ -34,7 +34,7 @@ data "openstack_networking_network_v2" "mgmt_private_net" {
 # Create the Jump Box Instance
 resource "openstack_compute_instance_v2" "jumpbox" {
   name            = "jumpbox"
-  flavor_name     = "m1.micro"             # 1 vCPU / 512MB-1GB RAM is plenty
+  flavor_name     = "m1.small"             # 1 vCPU / 512MB-1GB RAM is plenty
   config_drive    = true
   security_groups = ["jumpbox-sg"]
 
@@ -70,6 +70,12 @@ resource "openstack_compute_instance_v2" "jumpbox" {
         shell: /bin/bash
         ssh_authorized_keys:
           - ${file(var.ssh_key_file)}
+     runcmd:
+      - fallocate -l 4G /swapfile
+      - chmod 600 /swapfile
+      - mkswap /swapfile
+      - swapon /swapfile
+      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
     EOF
 }
 

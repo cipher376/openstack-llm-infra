@@ -9,12 +9,25 @@
     - "../../../vars.yml"    
   tags:
     - vault
-    - mgmt-vault
+    
   vars:
-    vault_addr: "http://127.0.0.1:8200"
-    local_creds_path: "./vault_secrets/mgmt_vault_creds.yml"
+    vault_addr: "https://127.0.0.1:8200"
   
   tasks:
+
+    - name: Create Cluster vault
+      community.general.terraform:
+        project_path: "../../../../terraform/cluster-vault"
+        state: present
+        force_init: yes
+        variables:
+          auth_url: "{{ os_auth_url }}"          # from your vault.yml or env
+          region: "{{ os_region_name }}"         # from your vars.yml
+          vm_ipv4: "{{ cluster_vault_ipv4 }}"       # matches variable name
+          ssh_key_file: "{{ local_public_key }}" # matches variable name
+          image_uuid: "{{ ubuntu_minimal_uuid }}"
+      tags:
+       - cluster-vault
 
     - name: Create management vault
       community.general.terraform:
@@ -29,8 +42,41 @@
           mgmt_vault_sg: "{{ mgmt_vault_sg }}" # list of strings
           mgmt_net: "{{ mgmt_net }}" 
           image_uuid: "{{ ubuntu_minimal_uuid }}"
-          
-    # --- PHASE 1: OS HARDENING ---
+      tags:
+       - mgmt-vault
+
+    
+
+
+- name: Wait for vault vm to become ready
+  hosts: mgmt_vault
+  gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  vars_files: 
+    - "../../../secrets/vault.yml" 
+    - "../../../vars.yml"
+  tags:
+    - vault
+  tasks:
+    - name: Ensure SSH is responding
+      wait_for_connection:
+        delay: 10      # Wait 10s before even trying
+        timeout: 300   # Give up after 5 mins
+
+
+- name: Install and configure vault and Firewall on vms.
+  hosts: vaults_vms
+  become: yes
+  vars_files: 
+    - "../../../secrets/vault.yml" 
+    - "../../../vars.yml"
+  tags:
+    - vault
+    - mgmt-vault
+    - vault-install
+  tasks:
+  #===============================================================
+  # --- PHASE 1: OS HARDENING OF MANAGEMENT VAULT---
+  #=============================================================== 
     - name: Disable Swap (Requirement for mlock)
       command: swapoff -a
       when: ansible_swaptotal_mb > 0
@@ -40,5 +86,370 @@
         path: /etc/fstab
         regexp: '^([^#].*?\sswap\s+.*)$'
         replace: '# \1'
+    - name: Ensure dependencies for GPG are present
+      ansible.builtin.apt:
+        name:
+          - gnupg
+          - software-properties-common
+        state: present
+        update_cache: yes
+    
+    - name: Download HashiCorp GPG Key
+      get_url:
+        url: https://apt.releases.hashicorp.com/gpg
+        dest: /tmp/hashicorp.gpg
+        mode: '0644'
 
+    - name: De-armor HashiCorp Key and move to keyring
+      shell: "gpg --dearmor < /tmp/hashicorp.gpg > /usr/share/keyrings/hashicorp-archive-keyring.gpg"
+      args:
+        creates: /usr/share/keyrings/hashicorp-archive-keyring.gpg
+
+    - name: Add HashiCorp Repository
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com {{ ansible_distribution_release }} main"
+        filename: hashicorp
+        state: present
+      register: repo_added
+
+    - name: Force apt update
+      apt:
+        update_cache: yes
+      when: repo_added.changed
+
+    # --- PHASE 2: VAULT INSTALL ---
+    - name: Install HashiCorp Key & Repo
+      shell: |
+        wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" > /etc/apt/sources.list.d/hashicorp.list
+      args:
+        creates: /etc/apt/sources.list.d/hashicorp.list
+
+    - name: Install Vault
+      apt:
+        name: vault
+        update_cache: yes
+
+    - name: Ensure UFW is installed (Minimal Image fix)
+      apt:
+        name: ufw
+        state: present
+        update_cache: yes
+    
+    - name: Configure UFW (Allow only Jumpbox and Internal API)
+      community.general.ufw:
+        rule: allow
+        port: "{{ item.port }}"
+        proto: tcp
+        from_ip: "{{ item.src }}"
+      loop:
+        - { port: '22', src: '10.10.10.0/24' }   # SSH from Mgmt Subnet
+        - { port: '8200', src: '10.0.0.0/8' }    # Vault API from Internal
+      notify: Reload UFW
+
+  handlers:
+    - name: Reload UFW
+      community.general.ufw:
+        state: reloaded
+
+- name: Hardened Management Vault (Transit Server) Setup
+  hosts: mgmt_vault
+  become: yes
+  vars_files: 
+    - "../../../secrets/vault.yml" 
+    - "../../../vars.yml"
+  vars:
+    vault_addr: "https://127.0.0.1:8200"
+    local_creds_path: "{{ secrets_path }}/mgmt_key.yml"
+    local_creds_path_workload: "{{ secrets_path }}/cluster_recovery.yml"
+    vault_password_file: "{{ secrets_path }}/.vault_pass"
+    remote_key_path: "/tmp/vault_keys.json"
+    cluster_vault: "{{cluster_vault_ipv4}}"
+  tags:
+    - vault
+    - mgmt-vault
+    - vault-setup
+  
+  tasks:
+    # --- PHASE 3: INITIALIZATION ---
+    - name: Start Vault Service
+      systemd:
+        name: vault
+        state: started
+        enabled: yes
+
+    - name: Initialize Vault
+      uri:
+        url: "{{ vault_addr }}/v1/sys/init"
+        method: POST
+        body_format: json
+        body:
+          secret_shares: 1
+          secret_threshold: 1
+        validate_certs: no
+      register: vault_init
+      # We want to know if this fails for any reason OTHER than "already init"
+      failed_when: 
+        - vault_init.status != 200 
+        - "'already initialized' not in vault_init.json | default('') | string"
+
+    - name: Parse and stage init credentials
+      ansible.builtin.copy:
+        content: "{{ vault_init.json | to_nice_json }}"
+        dest: "{{ remote_key_path }}"
+        mode: "0600"
+      # Change this to be more inclusive if the API returns 201 or similar
+      when: vault_init.status is defined and vault_init.status == 200
+
+    - name: Fetch keys file from vault
+      ansible.builtin.fetch:
+        src: "{{ remote_key_path }}"
+        dest: "{{ local_creds_path }}"
+        flat: true
+      when: vault_init.status == 200
+
+    # --- ENCRYPTION LOGIC (LOCALHOST) ---
+    - name: Ensure local keys directory exists
+      ansible.builtin.file:
+        path: "{{ local_creds_path | dirname }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      become: no
+
+    - name: Check if keys file is already Ansible-Vault encrypted
+      ansible.builtin.shell:
+        cmd: "head -n 1 {{ local_creds_path }} | grep -q '$ANSIBLE_VAULT'"
+      register: already_encrypted
+      failed_when: false
+      changed_when: false
+      delegate_to: localhost
+      become: no
+      # Only check if the file actually exists locally
+      when: query('file', local_creds_path) | length > 0
+
+    - name: Encrypt keys file with Ansible Vault
+      ansible.builtin.command:
+        argv:
+          - ansible-vault
+          - encrypt
+          - "{{ local_creds_path }}"
+          - --vault-password-file
+          - "{{ vault_password_file }}"
+      # Run only if the file exists and is NOT yet encrypted
+      when: 
+        - query('file', local_creds_path) | length > 0
+        - already_encrypted.rc is defined and already_encrypted.rc != 0
+      delegate_to: localhost
+      become: no
+
+    - name: Remove staging file 
+      ansible.builtin.file:
+        path: "{{ remote_key_path }}"
+        state: absent
+      when: vault_init.status == 200
+
+
+    # --- LOADING & UNSEALING ---
+    - name: Load credentials from local file
+      set_fact:
+        # If vault_init just happened, use that. Otherwise, load from local file.
+        vault_creds: "{{ vault_init.json if vault_init.status == 200 else lookup('file', local_creds_path) | from_yaml }}"
+      delegate_to: localhost
+      become: no
+      # Only attempt if we have fresh data OR a saved file
+      when: (vault_init.status == 200) or (query('file', local_creds_path) | length > 0)
+
+    - name: Unseal Vault
+      ansible.builtin.command:
+        cmd: "vault operator unseal {{ vault_creds.keys_base64[0] }}"
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_SKIP_VERIFY: "true"
+      when: vault_creds is defined
+      # no_log: true
+
+    # --- TRANSIT CONFIGURATION ---
+    - name: Enable Transit Engine
+      shell: "vault secrets enable transit"
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_TOKEN: "{{ vault_creds.root_token }}"
+        VAULT_SKIP_VERIFY: "true"
+      when: vault_creds is defined
+      ignore_errors: yes
+
+    - name: Create Auto-Unseal Key
+      shell: "vault write -f transit/keys/autounseal-key"
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_TOKEN: "{{ vault_creds.root_token }}"
+        VAULT_SKIP_VERIFY: "true"
+      when: vault_creds is defined
+      ignore_errors: yes
+
+    - name: Create Autounseal Policy
+      shell: |
+        vault policy write autounseal - <<EOF
+        path "transit/encrypt/autounseal-key" { capabilities = ["update"] }
+        path "transit/decrypt/autounseal-key" { capabilities = ["update"] }
+        EOF
+      environment:
+        VAULT_ADDR: "{{vault_addr}}"
+        VAULT_TOKEN: "{{ vault_creds.root_token }}"
+        VAULT_SKIP_VERIFY: "true"
+
+    - name: Generate Transit Token for Workload Cluster
+      shell: "vault token create -orphan -policy=autounseal -period=24h -format=json"
+      register: workload_token_raw
+      environment:
+        VAULT_ADDR: "{{vault_addr}}"
+        VAULT_TOKEN: "{{ vault_creds.root_token }}"
+        VAULT_SKIP_VERIFY: "true"
+
+    - name: Set Workload Token Fact
+      set_fact:
+        workload_vault_token: "{{ (workload_token_raw.stdout | from_json).auth.client_token }}"
+  
+  
+
+#=========================================================================
+# Configure cluster vault to use transit engine from management
+#=========================================================================
+
+- name: Configure cluster vault with trasit creds 
+  hosts: cluster_vault
+  become: yes
+  vars_files: 
+    - "../../../secrets/vault.yml" 
+    - "../../../vars.yml"
+  vars:
+    vault_addr: "http://127.0.0.1:8200"
+    local_creds_path: "{{ secrets_path }}/mgmt_key.yml"
+    local_creds_path_workload: "{{ secrets_path }}/cluster_recovery.yml"
+    vault_password_file: "{{ secrets_path }}/.vault_pass"
+    remote_key_path: "/tmp/vault_keys.json"
+    cluster_vault: "{{cluster_vault_ipv4}}"
+  tags:
+    - vault
+    - cluster-vault
+    - vault-setup
+    - transit-creds
+
+  tasks:
+    - name: Load Management Vault credentials
+      ansible.builtin.include_vars:
+        file: "{{ local_creds_path }}"
+        name: mgmt_vars # This puts everything into a 'mgmt_vars' object
+      delegate_to: localhost
+      become: no
+
+    - name: Set Token Fact
+      ansible.builtin.set_fact:
+        # Adjust the key name based on what you saved in the file
+        workload_vault_token: "{{ mgmt_vars.root_token }}"
+    
+    - name: Ensure Vault configuration directory exists
+      ansible.builtin.file:
+        path: /etc/vault.d
+        state: directory
+        owner: vault
+        group: vault
+        mode: '0755'
+
+    - name: Configure Workload Vault for Auto-Unseal
+      ansible.builtin.copy:
+        dest: /etc/vault.d/vault.hcl
+        owner: vault
+        group: vault
+        mode: '0644'
+        content: |
+          disable_mlock = true
+          # Use Raft for HA clustering
+          storage "raft" {
+            path    = "/opt/vault/data"
+            node_id = "{{ inventory_hostname }}"
+          }
+
+          listener "tcp" {
+            address     = "0.0.0.0:8200"
+            tls_disable = 1 # Use 0 and add certs for production
+          }
+
+          # THIS LINKS TO YOUR MGMT VAULT
+          seal "transit" {
+            address            = "https://{{mgmt_vault_ipv4}}:8200" # Mgmt Vault IP
+            disable_renewal    = "false"
+            key_name           = "autounseal-key"
+            mount_path         = "transit/"
+            token              = "{{ workload_vault_token }}"
+            tls_skip_verify    = "true"
+          }
+
+          api_addr     = "http://{{ cluster_vault_ipv4 }}:8200"
+          cluster_addr = "https://{{ cluster_vault_ipv4 }}:8201"
+          ui = true
+
+
+    - name: Ensure Vault is Restarted
+      ansible.builtin.systemd:
+        name: vault
+        state: restarted
+        enabled: yes
+
+    - name: Initialize Workload Vault (Auto-Unseal Mode)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:8200/v1/sys/init"
+        method: POST
+        body_format: json
+        body:
+          stored_shares: 1
+          recovery_shares: 1
+          recovery_threshold: 1
+      register: workload_init
+      failed_when: 
+        - workload_init.status != 200
+
+
+    - name: Stage Recovery Keys to remote temp file
+      ansible.builtin.copy:
+        content: "{{ workload_init.json | to_nice_json }}"
+        dest: "/tmp/workload_recovery_keys.json"
+        mode: "0600"
+      when: workload_init.status == 200
+
+
+    - name: Fetch Recovery Keys to local workstation
+      ansible.builtin.fetch:
+        src: "/tmp/workload_recovery_keys.json"
+        dest: "{{ local_creds_path_workload }}"
+        flat: true
+      when: workload_init.status == 200
+
+
+    - name: Securely remove remote temp file
+      ansible.builtin.file:
+        path: "/tmp/workload_recovery_keys.json"
+        state: absent
+      when: workload_init.status == 200
+
+
+    # --- LOCAL ENCRYPTION (Run on your machine) ---
+    - name: Encrypt Workload Recovery Keys with Ansible Vault
+      ansible.builtin.command:
+        argv:
+          - ansible-vault
+          - encrypt
+          - "{{ local_creds_path_workload }}"
+          - --vault-password-file
+          - "{{ vault_password_file }}"
+      delegate_to: localhost
+      become: no
+      when: 
+        - workload_init.status == 200
+        - query('file', local_creds_path_workload) | length > 0
+
+      
+
+  
     

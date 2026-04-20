@@ -1,0 +1,141 @@
+---
+- name: Install and Configure Bastion Proxies
+  hosts: jumpbox
+  become: yes
+  tags:
+    - proxy
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml   
+  handlers:
+    - name: validate nginx config
+      command: nginx -t
+      listen: "nginx config changed"
+      changed_when: false
+
+    - name: restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
+      listen: "nginx config changed"
+
+  tasks:
+    - name: Install Nginx and Squid
+      apt:
+        name: [nginx, squid]
+        state: present
+        update_cache: yes
+
+    # --- NGINX CONFIGURATION (Reverse Proxy) ---
+    
+    - name: Configure Nginx reverse proxy for GitLab
+      copy:
+        dest: /etc/nginx/sites-available/gitlab-proxy
+        content: |
+          server {
+              listen 80;
+              server_name {{ gitlab_external_url }};
+
+              location / {
+                  proxy_pass http://{{ gitlab_vm_ipv4 }};
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+
+                  client_max_body_size 10G;
+                  proxy_redirect http://{{ gitlab_vm_ipv4 }}/ http://$host/;
+              }
+          }
+      notify: "nginx config changed"
+
+    - name: Enable GitLab proxy site
+      file:
+        src: /etc/nginx/sites-available/gitlab-proxy
+        dest: /etc/nginx/sites-enabled/gitlab-proxy
+        state: link
+      notify: "nginx config changed"
+
+
+    - name: Configure Nginx reverse proxy for SeaweedFS
+      copy:
+        dest: /etc/nginx/sites-available/seaweedfs-proxy
+        content: |
+          server {
+              listen 80;
+              server_name {{ seaweedfs_external_url }};
+          
+              # Root location defaults to Filer for ease of use
+              location / {
+                  proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8888/;
+                  include /etc/nginx/proxy_params; # Optional: cleans up the config
+                  proxy_set_header Host $host;
+                  client_max_body_size 20G;
+              }
+          
+              # Access the Filer UI/API
+              location /filer/ {
+                  # The trailing slash on proxy_pass is CRITICAL. 
+                  # It tells Nginx to map /filer/test.txt to /test.txt on the backend.
+                  proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8888/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  
+                  # Rewrite headers in redirects
+                  proxy_redirect http://{{ seaweedfs_vm_ipv4 }}:8888/ /filer/;
+              }
+          
+              # Access the Master UI
+              location /master/ {
+                  proxy_pass http://{{ seaweedfs_vm_ipv4 }}:9333/;
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+          
+                  # Fixes links that the Master sends back
+                  proxy_redirect http://{{ seaweedfs_vm_ipv4 }}:9333/ /master/;
+              }
+          }
+      notify: "nginx config changed"
+
+    - name: Enable SeaweedFS proxy site
+      file:
+        src: /etc/nginx/sites-available/seaweedfs-proxy
+        dest: /etc/nginx/sites-enabled/seaweedfs-proxy
+        state: link
+      notify: "nginx config changed"
+
+
+    
+    - name: Remove Default Nginx Site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    # --- SQUID CONFIGURATION (Forward Proxy) ---
+
+    - name: Configure Squid to allow internal network
+      blockinfile:
+        path: /etc/squid/squid.conf
+        insertbefore: "http_access deny all"
+        block: |
+          acl internal_net src {{ internal_network }}
+          http_access allow internal_net
+          http_port 3128
+
+    # --- SERVICE MANAGEMENT ---
+
+    - name: Restart Nginx and Squid
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+        enabled: yes
+      loop:
+        - nginx
+        - squid
+
+

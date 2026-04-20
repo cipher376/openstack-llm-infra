@@ -1,4 +1,46 @@
 ---
+#--------------------------------------------------------------------------------#
+# Setup vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml    
+  tags:
+    - k3s
+    - k3s-vms
+  tasks:
+    - name: Deploy  k3s vms
+      community.general.terraform:
+        project_path: "../../../../terraform/kubernetes"
+        state: present
+        force_init: yes
+        variables:
+          auth_url: "{{ os_auth_url }}"
+          region: "{{ os_region_name }}"
+          ssh_key_file: "{{ local_public_key }}"
+          image_uuid: "{{ ubuntu_minimal_uuid }}"
+          k3s_master_01_vm_ipv4: "{{ k3s_mater_01_ipv4 }}"
+          k3s_worker_01_vm_ipv4: "{{ k3s_worker_01_ipv4 }}"
+          k3s_worker_02_vm_ipv4: "{{ k3s_worker_02_ipv4 }}"
+          gpu_worker_01_vm_ipv4: "{{ gpu_worker_01_ipv4 }}"
+          inference_worker_01_vm_ipv4: "{{ inference_worker_ipv4 }}"
+          k3s_subnet: "{{ k3s_subnet }}"
+
+
+- name: Wait for vault vm to become ready
+  hosts: k3s_servers
+  gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  tags:
+    - k3s_servers
+  tasks:
+    - name: Ensure SSH is responding
+      wait_for_connection:
+        delay: 15      # Wait 10s before even trying
+        timeout: 300   # Give up after 5 mins
+
+
 - name: "Install and Configure K3s Cluster (Master + Workers)"
   hosts: k3s_servers
   become: true
@@ -10,27 +52,30 @@
     - k3s
     - k3s-install
   vars:
-    k3s_version: "v1.29.3+k3s1"
     k3s_master_ip: "{{ hostvars['k3s-master-01']['ansible_host'] }}"
     k3s_token_file: "/var/lib/rancher/k3s/server/node-token"
     gpu_taint_key: "dedicated"
     gpu_taint_value: "gpu"
     gpu_taint_effect: "NoExecute"
     api_gate_features: "feature-gates=GatewayAPI=true"
-    network_interface: "ens3"
+
+    inference_taint_key: "dedicated"
+    inference_taint_value: "inference"
+    inference_taint_effect: "NoExecute"
 
     k3s_workers:
       - name: "gpu-worker-01"
-        ip: "{{ hostvars['gpu-worker-01']['ansible_host'] }}"
+        # ip: "{{ hostvars['gpu-worker-01']['ansible_host'] }}"
         labels:
           - "node-role.kubernetes.io/gpu-worker=true"
           - "hardware=gpu"
           - "nvidia.com/gpu=true"
-      - name: "k3s-worker-01"
-        ip:  "{{ hostvars['k3s-worker-01']['ansible_host'] }}"
+      - name: "inference-worker-01"
+        # ip: "{{ hostvars['inference-worker-01']['ansible_host'] }}"
         labels:
-          - "node-role.kubernetes.io/gitlab=true"
-          - "app=gitlab"
+          - "node-role.kubernetes.io/inference=true"
+          - "hardware=cpu"
+
   tasks:
     
     - name: Wait for cloud-init to finish
@@ -223,13 +268,14 @@
     - name: Taint Master Node to prevent general workloads
       kubernetes.core.k8s_taint:
         state: present
-        name: "{{ inventory_hostname }}"
+        name: "k3s-master-01"
         taints:
           - key: "node-role.kubernetes.io/master"
+            value: "true"
             effect: "NoSchedule"
           - key: "node-role.kubernetes.io/control-plane"
+            value: "true"
             effect: "NoSchedule"
-      delegate_to: k3s-master-01
       run_once: true
       when: ansible_host == k3s_master_ip
       environment:

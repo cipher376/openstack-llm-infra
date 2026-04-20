@@ -9,7 +9,7 @@ terraform {
 
 provider "openstack" {
   auth_url    = var.auth_url
-  region      = "${var.region}"
+  region      = var.region
   # Authentication is typically handled via environment variables 
   # (OS_USERNAME, OS_PASSWORD, etc.) for security.
 }
@@ -20,19 +20,46 @@ resource "openstack_blockstorage_volume_v3" "mgmt_vault_vol" {
   size = 10 
   image_id = var.image_uuid
   volume_type = "ncs-nvme"
+  description = "Persistent boot disk for management Vault"
+
 }
+
+# Create a port with a specific fixed IP
+data "openstack_networking_network_v2" mgmt_net {
+  name="mgmt_private_net"
+}
+data "openstack_networking_subnet_v2" "mgmt_subnet" {
+  network_id = data.openstack_networking_network_v2.mgmt_net.id
+  cidr       = "10.10.10.0/24" # Replace with your actual subnet range
+}
+
+data "openstack_networking_secgroup_v2" mgmt_vault_sg {
+  name = var.mgmt_vault_sg
+}
+resource "openstack_networking_port_v2" "vault_port" {
+  name           = "vault-static-port"
+  network_id     = data.openstack_networking_network_v2.mgmt_net.id
+  admin_state_up = "true"
+
+  fixed_ip {
+    subnet_id  = data.openstack_networking_subnet_v2.mgmt_subnet.id
+    ip_address = var.vm_ipv4 # The "Fixed" IP for your automation
+  }
+
+  security_group_ids = [data.openstack_networking_secgroup_v2.mgmt_vault_sg.id]
+}
+
 
 # The Management Vault Instance
 resource "openstack_compute_instance_v2" "mgmt_vault" {
   name            = "mgmt-vault-transit"
-  flavor_name     = "m1.micro" # Low resource footprint
+  flavor_name     = "m1.mini" # Low resource footprint
   security_groups = [var.mgmt_vault_sg]
   config_drive    = true
 
 
   network {
-    name        = var.mgmt_net
-    fixed_ip_v4 = var.vm_ipv4 # Fixed IP for predictable unseal config
+    port = openstack_networking_port_v2.vault_port.id
   }
 
   block_device {
@@ -64,4 +91,5 @@ resource "openstack_compute_instance_v2" "mgmt_vault" {
         ssh_authorized_keys:
           - ${file(var.ssh_key_file)}
     EOF
+
 }

@@ -1,5 +1,5 @@
 - name: "Install NVIDIA Drivers and CUDA in ML Worker VM"
-  hosts: all_vms
+  hosts: k3s_servers
   become: true
   tags:
     - nvidia
@@ -41,6 +41,27 @@
 # ------------------------------------------------------------------ #
 #  SECTION 2 — PREREQUISITES                                           #
 # ------------------------------------------------------------------ #
+    - name: Remove conflicting NVIDIA source files
+      file:
+        path: "/etc/apt/sources.list.d/{{ item }}"
+        state: absent
+      loop:
+        - nvidia-container-toolkit.list
+        - libnvidia-container.list
+
+    - name: Add NVIDIA GPG Key
+      get_url:
+        url: https://nvidia.github.io/libnvidia-container/gpgkey
+        dest: /usr/share/keyrings/nvidia-container-toolkit-keyring.asc
+        mode: '0644'
+        force: yes
+    
+    - name: Configure NVIDIA Repository with GPG Key
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.asc] https://nvidia.github.io/libnvidia-container/stable/deb/amd64 /"
+        state: present
+        filename: nvidia-container-toolkit
+        update_cache: yes
 
     - name: Install prerequisites
       apt:
@@ -54,6 +75,12 @@
         update_cache: yes
       register: prereq_install
       failed_when: false
+
+    - name: Trigger DKMS autoinstall to rebuild modules
+      command: dkms autoinstall -k {{ ansible_kernel }}
+      when: header_install.changed
+      register: dkms_result
+      changed_when: "'Installing' in dkms_result.stdout"
 
     - name: Fail if prerequisites could not be installed
       fail:

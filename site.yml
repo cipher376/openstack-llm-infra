@@ -8,29 +8,38 @@
 - import_playbook: ansible/playbooks/ncs/common/04-provision_jumpbox.yml
 
 #--------------------------------------------------------------------------------#
-# Deploy management vault
+# Deploy  vaults
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/vault/config-vault.yml
 
 
-
 #--------------------------------------------------------------------------------#
-# Deploy kubernetes vms
+# Deploy Storage vms
 #--------------------------------------------------------------------------------#
-# - import_playbook: ansible/playbooks/ncs/kubernetes/01-provision_k3s_network.yml
-# - import_playbook: ansible/playbooks/ncs/kubernetes/02-provision_k3s_security_groups.yml
-# - import_playbook: ansible/playbooks/ncs/kubernetes/03-provision_k3s_vms.yml
-# - import_playbook: ansible/playbooks/ncs/kubernetes/04-install_k3s.yml
+- import_playbook: ansible/playbooks/ncs/gitlab/gitlab-config.yml
+- import_playbook: ansible/playbooks/ncs/seaweedfs/seaweedfs-config.yml
 
 
 #--------------------------------------------------------------------------------#
 # Deploy kubernetes vms
+#--------------------------------------------------------------------------------#
+- import_playbook: ansible/playbooks/ncs/kubernetes/k3s-config.yml
+
+#--------------------------------------------------------------------------------#
+# Install Nvidia GPU drivers
+#--------------------------------------------------------------------------------#
+- import_playbook: ansible/playbooks/ncs/nvidia/install_gpu_drivers.yml
+- import_playbook: ansible/playbooks/ncs/kubernetes/nvidia_K3s_plugin.yml
+
+
+#--------------------------------------------------------------------------------#
+# Configure Security
+#--------------------------------------------------------------------------------#
+- import_playbook: ansible/playbooks/ncs/security/proxy-config.yml
+
+
+#--------------------------------------------------------------------------------#
+# Deploy ARGOCD
 #--------------------------------------------------------------------------------#
 # - import_playbook: ansible/playbooks/ncs/nvidia/01-install_gpu_drivers.yml
-# - import_playbook: ansible/playbooks/ncs/nvidia/02-nvidia_plugin.yml
 
-
-#--------------------------------------------------------------------------------#
-# Deploy kubernetes vms
-#--------------------------------------------------------------------------------#
-# - import_playbook: ansible/playbooks/ncs/gitlab/01-gitlab-config.yml

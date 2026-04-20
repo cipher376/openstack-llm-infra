@@ -8,7 +8,7 @@ variable "ssh_public_key" {
 variable "auth_url" {
   description = "cloud api url"
   type        = string
-  default     = "http://mycloud.lan:5000/v3"
+  default     = "http://ncs-cloud.lan:5000/v3"
 }
 
 variable "region"{
@@ -17,14 +17,10 @@ variable "region"{
   default     = "RegionOne"
 }
 
-variable "key_pair" {
-  type = string
-  default = "k3s-cluster-key"
-}
 
-variable "gitlab_vm_ipv4" {
+variable "seaweedfs_vm_ipv4" {
   type = string
-  default = "10.10.20.5"
+  default = "10.10.20.10"
 }
 
 variable "image_UUId" {

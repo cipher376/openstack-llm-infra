@@ -14,21 +14,21 @@ provider "openstack" {
   # (OS_USERNAME, OS_PASSWORD, etc.) for security.
 }
 
-resource "openstack_blockstorage_volume_v2" "model_storage" {
-  name = "model-registry-1tb"
-  size = 1000
+resource "openstack_blockstorage_volume_v3" "model_storage" {
+  name          = "model-registry-1tb"
+  volume_type   = "ncs-hdd"
+  size          = 1000
 }
 
 resource "openstack_compute_instance_v2" "seaweedfs" {
   name            = "seaweedfs-storage"
   flavor_name     = "m1.medium" # Focused on I/O, 4GB RAM is fine
-  key_pair        = "k3s-cluster-key"
-  security_groups = [openstack_networking_secgroup_v2.internal_sg.name]
+  security_groups = ["internal-sg","seaweedfs-sg"]
   config_drive    = true
 
   network { 
-    uuid = openstack_networking_network_v2.data_net.id
-    fixed_ip_v4 = "10.0.1.20" 
+    name = "data_private_net"
+    fixed_ip_v4 = var.seaweedfs_vm_ipv4 
    }
 
   # OS Disk
@@ -39,11 +39,12 @@ resource "openstack_compute_instance_v2" "seaweedfs" {
     volume_size           = 30
     boot_index            = 0
     delete_on_termination = true
+    volume_type           = "ncs-nvme"
   }
 
   # Attached 1TB Data Disk
   block_device {
-    uuid                  = openstack_blockstorage_volume_v2.model_storage.id
+    uuid                  = openstack_blockstorage_volume_v3.model_storage.id
     source_type           = "volume"
     destination_type      = "volume"
     boot_index            = -1
@@ -52,10 +53,23 @@ resource "openstack_compute_instance_v2" "seaweedfs" {
 
   user_data = <<-EOF
     #cloud-config
+    users:
+      - name: ubuntu
+        groups: sudo
+        shell: /bin/bash
+        sudo: ['ALL=(ALL) NOPASSWD:ALL']
+        ssh_authorized_keys:
+          - ${file(var.ssh_public_key)}
+    hostname: seaweedfs
     runcmd:
       - mkfs.ext4 /dev/vdb
       - mkdir -p /data/models
       - mount /dev/vdb /data/models
       - echo "/dev/vdb /data/models ext4 defaults 0 0" >> /etc/fstab
+      - fallocate -l 8G /swapfile
+      - chmod 600 /swapfile
+      - mkswap /swapfile
+      - swapon /swapfile
+      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
     EOF
 }

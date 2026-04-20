@@ -3,7 +3,7 @@
   hosts: "k3s_servers"
   become: true
   tags:
-    - nvidia
+    - k3s
     - nvidia-plugin
   environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml

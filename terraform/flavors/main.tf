@@ -139,8 +139,8 @@ resource "openstack_compute_flavor_v2" "ai_gpu6gb_01_boot" {
 # Super Heavy Inference Flavor
 resource "openstack_compute_flavor_v2" "ai_inference_boot" {
   name      = "ai.inference.boot"
-  ram       = 32768
-  vcpus     = 12
+  ram       = 10240
+  vcpus     = 10
   disk      = 60
   is_public = true
 }

@@ -27,7 +27,7 @@ locals {
         shell: /bin/bash
         sudo: ['ALL=(ALL) NOPASSWD:ALL']
         ssh_authorized_keys:
-          - ${var.ssh_public_key}
+          - ${file(var.ssh_public_key)}
     hostname: gitlab-server
     runcmd:
       - fallocate -l 8G /swapfile
@@ -44,25 +44,24 @@ locals {
 
 resource "openstack_compute_instance_v2" "gitlab_server" {
   name            = "gitlab-server"
-  flavor_name     = "standard.large"             # Equivalent to your 4-core / 8GB RAM
+  flavor_name     = "m1.medium"             # Equivalent to your 4-core / 8GB RAM
   key_pair        = "${var.key_pair}"           # Pre-registered OpenStack keypair
-  security_groups = [openstack_networking_secgroup_v2.internal_sg.name]
+  security_groups = ["internal-sg","gitlab-sg"]
   user_data       = local.gitlab_user_data
   config_drive    = true
 
   network {
-    uuid = openstack_networking_network_v2.data_net.id
+    name = "data_private_net"
     fixed_ip_v4 = "${var.gitlab_vm_ipv4}"
   }
 
-  # Primary Disk (OS) - Often defined by the Flavor, 
-  # but can be specified via block_device for custom sizes.
   block_device {
-    uuid                  = "${var.image_UUId}"
+    uuid                  = var.image_UUId
     source_type           = "image"
     volume_size           = 40
     destination_type      = "volume"
-    delete_on_termination = true
+    volume_type           = "ncs-nvme"
+    delete_on_termination = false
     boot_index            = 0           
   }
 
