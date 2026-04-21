@@ -136,7 +136,7 @@
         state: present
         update_cache: yes
     
-    - name: Configure UFW (Allow only Jumpbox and Internal API)
+    - name: Configure UFW (Allow only bastion and Internal API)
       community.general.ufw:
         rule: allow
         port: "{{ item.port }}"

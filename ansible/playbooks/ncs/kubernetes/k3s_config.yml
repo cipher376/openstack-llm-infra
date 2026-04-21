@@ -734,7 +734,7 @@
             spec:
               # Matches any interface starting with 'e' (eth0, enp3s0, etc.)
               interfaces:
-                - eth0 # Matches eth0 (Common on VMs/Master)
+                - ens3 # Matches eth0 (Common on VMs/Master)
               externalIPs: true
               loadBalancerIPs: true
               # This links the policy to your existing pool

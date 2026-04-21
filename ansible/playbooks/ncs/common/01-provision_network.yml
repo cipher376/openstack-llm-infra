@@ -5,7 +5,7 @@
 - name: Set up vm nodes with terraform
   hosts: localhost
   vars_files: 
-    - ../../../secrets/vault.yml   
+    - ../../../../secrets/vault.yml   
     - ../../../vars.yml    
   tags:
     - blue-print
@@ -15,4 +15,13 @@
         project_path: "../../../../terraform/blue-print"
         state: present
         force_init: yes
-        
+        variables:
+          mgmt_net_range: "{{ mgmt_net_range }}"
+          mgmt_net: "{{ mgmt_net }}"
+          date_net_range: "{{ date_net_range }}"
+          data_net: "{{ data_net }}"
+          service_net_range: "{{ service_net_range }}"
+          service_net: "{{ service_net }}"
+          k3s_net_range: "{{ k3s_net_range }}"
+          k3s_net: "{{ k3s_net }}"
+          key_pair_file: "{{ local_public_key }}"

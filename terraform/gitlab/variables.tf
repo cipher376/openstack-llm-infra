@@ -19,7 +19,6 @@ variable "region"{
 
 variable "key_pair" {
   type = string
-  default = "k3s-cluster-key"
 }
 
 variable "gitlab_vm_ipv4" {

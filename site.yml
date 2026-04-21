@@ -5,7 +5,8 @@
 - import_playbook: ansible/playbooks/ncs/common/01-provision_network.yml
 - import_playbook: ansible/playbooks/ncs/common/02-create_flavors.yml
 - import_playbook: ansible/playbooks/ncs/common/03-upload_cloud_images.yml
-- import_playbook: ansible/playbooks/ncs/common/04-provision_jumpbox.yml
+- import_playbook: ansible/playbooks/ncs/common/04-provision_bastion.yml
+- import_playbook: ansible/playbooks/ncs/cloud-services/services-conf.yml
 
 #--------------------------------------------------------------------------------#
 # Deploy  vaults
@@ -23,7 +24,8 @@
 #--------------------------------------------------------------------------------#
 # Deploy kubernetes vms
 #--------------------------------------------------------------------------------#
-- import_playbook: ansible/playbooks/ncs/kubernetes/k3s-config.yml
+- import_playbook: ansible/playbooks/ncs/kubernetes/k3s_config.yml
+- import_playbook: ansible/playbooks/ncs/kubernetes/k3s_magnum_config.yml
 
 #--------------------------------------------------------------------------------#
 # Install Nvidia GPU drivers

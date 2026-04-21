@@ -30,6 +30,14 @@ resource "openstack_networking_network_v2" "public_net" {
   }
 }
 
+# This looks up the network that already exists
+# data "openstack_networking_network_v2" "public_net" {
+#   name = "public" 
+#   # Or use: matching_metadata = "vlan_id:20"
+# }
+
+
+
 # 2. The Public Subnet
 # This defines the pool of Floating IPs (172.16.20.0/25 as you specified)
 resource "openstack_networking_subnet_v2" "public_subnet" {
@@ -56,24 +64,37 @@ resource "openstack_networking_router_v2" "vpc_router" {
 
 # --- NETWORKING: 3-TIER TOPOLOGY ---
 
-resource "openstack_networking_network_v2" "mgmt_net" { name = "mgmt_private_net" }
+resource "openstack_networking_network_v2" "mgmt_net" {   name = var.mgmt_net }
 resource "openstack_networking_subnet_v2" "mgmt_subnet" {
   network_id = openstack_networking_network_v2.mgmt_net.id
-  cidr       = "10.10.10.0/24"
+  cidr       = var.mgmt_net_range
+  name       = "mgmt_subnet"
 }
 
-resource "openstack_networking_network_v2" "data_net" { name = "data_private_net" }
+resource "openstack_networking_network_v2" "data_net" {   name = var.data_net }
 resource "openstack_networking_subnet_v2" "data_subnet" {
   network_id = openstack_networking_network_v2.data_net.id
-  cidr       = "10.10.20.0/24"
+  cidr       = var.date_net_range
+  name       = "data_subnet"
+
 }
 
-resource "openstack_networking_network_v2" "k3s_net" { name = "k3s_private_net" }
+resource "openstack_networking_network_v2" "k3s_net" { name = var.service_net }
 resource "openstack_networking_subnet_v2" "k3s_subnet" {
-  name      = "k3s_private_subnet"
   network_id = openstack_networking_network_v2.k3s_net.id
-  cidr       = "10.10.30.0/24"
+  cidr       = var.service_net_range
+  name       = "service_subnet"
 }
+
+resource "openstack_networking_network_v2" "service_net" { name = var.k3s_net }
+resource "openstack_networking_subnet_v2" "service_subnet" {
+  network_id = openstack_networking_network_v2.service_net.id
+  cidr       = var.k3s_net_range
+  name       = "k3s_subnet"
+  
+}
+
+
 resource "openstack_networking_router_interface_v2" "mgmt_itf" {
   router_id = openstack_networking_router_v2.vpc_router.id
   subnet_id = openstack_networking_subnet_v2.mgmt_subnet.id
@@ -89,16 +110,32 @@ resource "openstack_networking_router_interface_v2" "k3s_itf" {
   subnet_id = openstack_networking_subnet_v2.k3s_subnet.id
 }
 
+resource "openstack_networking_router_interface_v2" "service_itf" {
+  router_id = openstack_networking_router_v2.vpc_router.id
+  subnet_id = openstack_networking_subnet_v2.service_subnet.id
+}
+
+
+
+#===============================================================================
+# --- DEFAULT KEY PAIR ---
+#===============================================================================
+
+resource "openstack_compute_keypair_v2" "cluster_keypair" {
+  name       = "cluster-auth-key"
+  public_key = file("${var.key_pair_file}")
+}
+
 
 #===============================================================================
 # --- SECURITY GROUPS: THE FIREWALL TIERS ---
 #===============================================================================
-# Jumpbox SG: Only SSH from your IP
-resource "openstack_networking_secgroup_v2" "jumpbox_sg" { name = "jumpbox-sg" }
+# bastion SG: Only SSH from your IP
+resource "openstack_networking_secgroup_v2" "bastion_sg" { name = "bastion-sg" }
 
 
 locals {
-  jumpbox_rules = [
+  bastion_rules = [
     { proto = "tcp",  min = 22, max = 22, remote_ip="172.16.0.0/16", desc = "ssh external" },
     { proto = "tcp",  min = 80, max = 80, remote_ip="0.0.0.0/0", desc = "External to ngix proxy http" },
     { proto = "tcp",  min = 443, max = 443, remote_ip="0.0.0.0/0", desc = "External to ngix proxy https" },
@@ -107,12 +144,12 @@ locals {
   ]
 }
 
-resource "openstack_networking_secgroup_rule_v2" "jumpbox_sg_rules" {
-  for_each = { for rule in local.jumpbox_rules : rule.desc => rule }
+resource "openstack_networking_secgroup_rule_v2" "bastion_sg_rules" {
+  for_each = { for rule in local.bastion_rules : rule.desc => rule }
 
   direction         = "ingress"
   ethertype         = "IPv4"
-  security_group_id = openstack_networking_secgroup_v2.jumpbox_sg.id
+  security_group_id = openstack_networking_secgroup_v2.bastion_sg.id
   
   protocol          = each.value.proto
   port_range_min    = each.value.min
@@ -144,7 +181,7 @@ resource "openstack_networking_secgroup_rule_v2" "gitlab_sg_rules" {
 
 
 #==================================================================================
-# Internal SG: Only allow SSH FROM the Jumpbox
+# Internal SG: Only allow SSH FROM the bastion
 resource "openstack_networking_secgroup_v2" "internal_sg" { 
   name = "internal-sg"
   description = "Provide shared access to the vms e.g ssh from the jump box" 
@@ -155,7 +192,7 @@ resource "openstack_networking_secgroup_rule_v2" "ssh_from_jump" {
   protocol          = "tcp"
   port_range_min    = 22
   port_range_max    = 22
-  remote_group_id   = openstack_networking_secgroup_v2.jumpbox_sg.id
+  remote_group_id   = openstack_networking_secgroup_v2.bastion_sg.id
   security_group_id = openstack_networking_secgroup_v2.internal_sg.id
 }
 
@@ -217,7 +254,7 @@ resource "openstack_networking_secgroup_v2" "mgmt_vault_sg" {
   description = "Security group for the Transit Auto-Unseal Vault"
 }
 
-# Allow SSH from Jumpbox only
+# Allow SSH from bastion only
 resource "openstack_networking_secgroup_rule_v2" "mgmt_vault_ssh" {
   direction         = "ingress"
   ethertype         = "IPv4"
@@ -269,7 +306,7 @@ resource "openstack_networking_secgroup_rule_v2" "allow_ssh_to_vault" {
   protocol          = "tcp"
   port_range_min    = 22
   port_range_max    = 22
-  remote_group_id   = openstack_networking_secgroup_v2.jumpbox_sg.id
+  remote_group_id   = openstack_networking_secgroup_v2.bastion_sg.id
   security_group_id = openstack_networking_secgroup_v2.cluster_vault_sg.id
 }
 

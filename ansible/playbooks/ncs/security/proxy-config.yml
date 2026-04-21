@@ -1,9 +1,10 @@
 ---
 - name: Install and Configure Bastion Proxies
-  hosts: jumpbox
+  hosts: bastion_server
   become: yes
   tags:
     - proxy
+    - bastion-server
   vars_files: 
     - ../../../secrets/vault.yml   
     - ../../../vars.yml   
@@ -27,7 +28,7 @@
         state: present
         update_cache: yes
 
-    # --- NGINX CONFIGURATION (Reverse Proxy) ---
+#========================GITLAB====================================================
     
     - name: Configure Nginx reverse proxy for GitLab
       copy:
@@ -36,16 +37,32 @@
           server {
               listen 80;
               server_name {{ gitlab_external_url }};
+              client_max_body_size 10G;
 
               location / {
                   proxy_pass http://{{ gitlab_vm_ipv4 }};
+        
+                  # 2. Standard Proxy Headers
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
                   proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                   proxy_set_header X-Forwarded-Proto $scheme;
 
-                  client_max_body_size 10G;
+                  # 3. Handle Redirects
+                  # This ensures that if GitLab sends a 302 to its internal IP, 
+                  # Nginx rewrites it to your external domain.
                   proxy_redirect http://{{ gitlab_vm_ipv4 }}/ http://$host/;
+
+                  # 4. Connection Settings for WebSockets (needed for GitLab Terminal/Live logs)
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "upgrade";
+
+                  # 5. Performance Tuning
+                  proxy_read_timeout 300;
+                  proxy_connect_timeout 300;
+                  proxy_send_timeout 300;
+                  proxy_buffering off;
               }
           }
       notify: "nginx config changed"
@@ -57,49 +74,58 @@
         state: link
       notify: "nginx config changed"
 
-
+#============================SEAWEEDFS=======================================================
     - name: Configure Nginx reverse proxy for SeaweedFS
       copy:
         dest: /etc/nginx/sites-available/seaweedfs-proxy
         content: |
-          server {
-              listen 80;
-              server_name {{ seaweedfs_external_url }};
-          
-              # Root location defaults to Filer for ease of use
-              location / {
-                  proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8888/;
-                  include /etc/nginx/proxy_params; # Optional: cleans up the config
-                  proxy_set_header Host $host;
-                  client_max_body_size 20G;
+            # 1. Filer Interface (The main data access point)
+              server {
+                  listen 80;
+                  server_name filer.seaweedfs.ncs-cloud.lan;
+
+                  client_max_body_size 0;
+                  proxy_buffering off;
+
+                  location / {
+                      proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8888;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
               }
-          
-              # Access the Filer UI/API
-              location /filer/ {
-                  # The trailing slash on proxy_pass is CRITICAL. 
-                  # It tells Nginx to map /filer/test.txt to /test.txt on the backend.
-                  proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8888/;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-                  
-                  # Rewrite headers in redirects
-                  proxy_redirect http://{{ seaweedfs_vm_ipv4 }}:8888/ /filer/;
+
+              # 2. Master UI (Cluster management)
+              server {
+                  listen 80;
+                  server_name master.seaweedfs.ncs-cloud.lan;
+
+                  location / {
+                      proxy_pass http://{{ seaweedfs_vm_ipv4 }}:9333;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
               }
-          
-              # Access the Master UI
-              location /master/ {
-                  proxy_pass http://{{ seaweedfs_vm_ipv4 }}:9333/;
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-          
-                  # Fixes links that the Master sends back
-                  proxy_redirect http://{{ seaweedfs_vm_ipv4 }}:9333/ /master/;
+
+              # 3. S3 Gateway (API access for ML tools)
+              server {
+                  listen 80;
+                  server_name s3.seaweedfs.ncs-cloud.lan;
+
+                  client_max_body_size 0;
+                  proxy_buffering off;
+
+                  location / {
+                      proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8333;
+                      proxy_set_header Host $host;
+                      proxy_set_header X-Real-IP $remote_addr;
+                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                      proxy_set_header X-Forwarded-Proto $scheme;
+                  }
               }
-          }
       notify: "nginx config changed"
 
     - name: Enable SeaweedFS proxy site
@@ -109,8 +135,92 @@
         state: link
       notify: "nginx config changed"
 
+#==========================PI-HOLE============================================
+    - name: Configure Services  access (dns, vpn)
+      copy:
+        dest: /etc/nginx/sites-available/pihole-proxy
+        content: |
+          server {
+              listen 80;
+              server_name {{ pihole_external_urls }};
 
-    
+              location /admin/ {
+              proxy_pass http://{{ cloud_service_vm_IPv4 }}/admin/;
+              include /etc/nginx/proxy_params;
+              proxy_redirect http://{{ cloud_service_vm_IPv4 }}/ /;
+          }
+
+          # 2. CRITICAL: Handle the API calls specifically
+          # This prevents the 301/308 redirect on POST requests
+          location /api/ {
+              proxy_pass http://{{ cloud_service_vm_IPv4 }}/api/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+          }
+
+          # 3. Handle the login and other root-level redirects
+          location / {
+              # If the backend sends a redirect, we capture and fix it here
+              proxy_pass http://{{ cloud_service_vm_IPv4 }};
+              proxy_redirect http://{{ cloud_service_vm_IPv4 }}/ /;
+
+              # If it's just the root, send them to admin
+              if ($request_uri = "/") {
+                  return 301 $scheme://$host/admin/;
+              }
+          }
+
+                }
+      notify: "nginx config changed"
+
+    - name: Enable Pi-hole proxy site
+      file:
+        src: /etc/nginx/sites-available/pihole-proxy
+        dest: /etc/nginx/sites-enabled/pihole-proxy
+        state: link
+      notify: "nginx config changed"
+
+
+#==========================Up-time============================================
+    - name: Configure Services  access (uptime)
+      copy:
+        dest: /etc/nginx/sites-available/uptime-proxy
+        content: |
+            server {
+            listen 80;
+            server_name {{ uptime_external_urls }};
+
+            location / {
+                proxy_pass http://{{ cloud_service_vm_IPv4 }}:3001; # Default Uptime Kuma port
+
+                # WebSocket Support (CRITICAL)
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+
+                # Standard Headers
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+
+                # Timeouts for long-lived WebSocket connections
+                proxy_read_timeout 86400s;
+                proxy_send_timeout 86400s;
+              }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable uptime-kuma proxy site
+      file:
+        src: /etc/nginx/sites-available/uptime-proxy
+        dest: /etc/nginx/sites-enabled/uptime-proxy
+        state: link
+      notify: "nginx config changed"
+
+
     - name: Remove Default Nginx Site
       file:
         path: /etc/nginx/sites-enabled/default

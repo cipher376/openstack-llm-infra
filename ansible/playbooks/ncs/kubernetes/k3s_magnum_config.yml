@@ -1,0 +1,23 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml    
+  tags:
+    - k3s-magnum
+  tasks:
+    - name: Deploy  k3s vms
+      community.general.terraform:
+        project_path: "../../../../terraform/kubernetes_magnum"
+        state: present
+        force_init: yes
+        variables:
+          auth_url: "{{ os_auth_url }}"
+          region: "{{ os_region_name }}"
+          ssh_key_pair: "{{ default_key_pair }}"
+          image: "{{ ubuntu_image }}"
+          

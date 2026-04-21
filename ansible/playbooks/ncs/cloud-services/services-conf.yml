@@ -1,0 +1,143 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml    
+  tags:
+    - services
+  tasks:
+    - name: Deploy services vm
+      community.general.terraform:
+        project_path: "../../../../terraform/cloud-services"
+        state: present
+        force_init: yes
+        variables:
+          auth_url: "{{ os_auth_url }}"
+          region: "{{ os_region_name }}"
+          internal_network: "{{ internal_network }}"
+          subnet: "{{ service_net }}"
+          pinhole_admin_pass: "{{ pihole_admin_pass }}"
+          vm_ipv4: "{{ cloud_service_vm_IPv4 }}"
+          image_uuid: "{{ ubuntu_minimal_uuid }}"
+          ssh_key_file: "{{ local_public_key }}"
+          key_pair: "{{ default_key_pair }}"
+
+
+- name: Wait for vault vm to become ready
+  hosts: cloud_services
+  gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  tags:
+    - services
+  tasks:
+    - name: Ensure SSH is responding
+      wait_for_connection:
+        delay: 15      # Wait 10s before even trying
+        timeout: 300   # Give up after 5 mins
+
+
+
+- name: Deploy Cloud Services Stack
+  hosts: cloud_services
+  gather_facts: true  # Must be false because python/SSH isn't ready yet
+  become: true
+  vars:
+    project_path: "/opt/cloud-services"
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml  
+  tags:
+    - services
+    - sevices-config
+  tasks:
+    
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+
+    - name: Install Docker and Dependencies
+      apt:
+        name: 
+          - docker.io
+          - docker-compose-v2
+          - curl 
+          - git
+        state: present
+      retries: 3
+      delay: 5
+
+    - name: Disable systemd-resolved to free Port 53
+      service:
+        name: systemd-resolved
+        state: stopped
+        enabled: no
+
+    - name: Set static DNS for the host itself
+      copy:
+        dest: /etc/resolv.conf
+        content: |
+          nameserver 127.0.0.1
+          nameserver 172.16.5.1
+          nameserver 1.1.1.1
+          search ncs-cloud.lan
+
+    - name: Create project directory
+      file:
+        path: "{{ project_path }}"
+        state: directory
+        mode: '0755'
+
+    - name: Deploy Docker Compose file
+      copy:
+        dest: "{{ project_path }}/docker-compose.yml"
+        content: |
+          services:
+            pihole:
+              container_name: pihole
+              image: pihole/pihole:latest
+              ports:
+                - "53:53/tcp"
+                - "53:53/udp"
+                - "80:80/tcp"
+              environment:
+                TZ: 'America/Edmonton'
+                FTLCONF_webserver_api_password: '{{ pihole_admin_pass }}'
+              restart: always
+
+            uptime-kuma:
+              container_name: uptime-kuma
+              image: louislam/uptime-kuma:1
+              ports:
+                - "3001:3001/tcp"
+              dns:
+                - {{ cloud_service_vm_IPv4 }}
+              volumes:
+                - uptime-kuma:/app/data
+              restart: always
+
+            wireguard:
+              container_name: wireguard
+              image: lscr.io/linuxserver/wireguard:latest
+              cap_add: [NET_ADMIN, SYS_MODULE]
+              environment:
+                PUID: 1000
+                PGID: 1000
+                TZ: America/Edmonton
+                SERVERPORT: 51820
+              ports:
+                - "51820:51820/udp"
+              volumes:
+                - /opt/wireguard/config:/config
+                - /lib/modules:/lib/modules
+              restart: always
+
+          volumes:
+            uptime-kuma:
+
+    - name: Start the Services
+      shell: "docker compose -f {{ project_path }}/docker-compose.yml up -d"
+  

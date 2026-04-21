@@ -5,20 +5,36 @@ external_network_name: "public"
 local_public_key: "/home/antiamoah890/.ssh/id_ed25519_cluster.pub"
 local_private_key: "/home/antiamoah890/.ssh/id_ed25519_cluster"
 ubuntu_minimal_uuid: "e46293b4-bdc6-419c-9150-e7d0edb767e5"
+ubuntu_image: "Ubuntu-24.04-Minimal"
 secrets_path: "/home/antiamoah890/Scripts/openstack-llm-infra/secrets"
+default_key_pair: "cluster-auth-key"
+
 internal_network: "10.10.0.0/16"
+mgmt_net: "mgmt_private_net"
+mgmt_net_range: "10.10.10.0/24"
+
+data_net: "data_private_net"
+date_net_range: "10.10.20.0/24"
+
+service_net: "service_private_net"
+service_net_range: "10.10.40.0/24"
+
+k3s_net: "k3s_private_net"
+k3s_net_range: "10.10.30.0/24"
+
+
 
 #Management vault 
 mgmt_vault_ipv4: "10.10.10.100"
 mgmt_vault_sg: "mgmt-vault-sg"
-mgmt_net: "mgmt_private_net"
 
 #Cluster vault
 cluster_vault_ipv4: "10.10.20.100"
 
 
 # Jumbox
-JUMPBOX_PUBLIC_IP: "172.16.20.61"
+BASTION_PUBLIC_IP: "172.16.20.78"
+bastion_insternal_ip: "10.10.10.10"
 
 # kubernetes
 k3s_version: "v1.29.3+k3s1"
@@ -33,9 +49,11 @@ gpu_worker_01_ipv4: "10.10.30.10"
 inference_worker_ipv4: "10.10.30.15"
 k3s_worker_01_ipv4: "10.10.30.20"
 k3s_worker_02_ipv4: "10.10.30.21"
-
 k3s_subnet: "k3s_private_net"
 network_interface: "ens3"
+
+
+
 
 #Gitlab
 gitlab_vm_ipv4: "10.10.20.5" 
@@ -45,3 +63,10 @@ gitlab_external_url: "gitlab.ncs-cloud.lan"
 #seaweedfs
 seaweedfs_vm_ipv4: "10.10.20.10"
 seaweedfs_external_url: "seaweedfs.ncs-cloud.lan"
+
+
+#Cloud-services (dns, vpn, )
+cloud_service_vm_IPv4: "10.10.40.10" 
+pihole_external_urls: "dns.ncs-cloud.lan"
+uptime_external_urls: "uptime.ncs-cloud.lan"
+

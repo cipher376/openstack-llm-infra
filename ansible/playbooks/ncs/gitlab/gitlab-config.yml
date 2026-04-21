@@ -18,6 +18,7 @@
         variables:
           ssh_public_key: "{{ local_public_key }}"
           gitlab_vm_ipv4: "{{ gitlab_vm_ipv4 }}"
+          key_pair: "{{ default_key_pair }}"
     
     # - name: Wait for cloud-init to finish
     #   ansible.builtin.shell: cloud-init status --wait
@@ -26,6 +27,17 @@
     #   changed_when: false
     #   retries: 100
     #   delay: 10
+- name: Wait for  vm to become ready
+  hosts: gitlab_server
+  gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  tags:
+    - gitlab
+  tasks:
+    - name: Ensure SSH is responding
+      wait_for_connection:
+        delay: 15      # Wait 10s before even trying
+        timeout: 300   # Give up after 5 mins
+
 
 #--------------------------------------------------------------------------------#
 # CONFIGURE GITLAB-SERVER                                                        #
@@ -208,7 +220,28 @@
         src: /tmp/gitlab_login_info.txt
         dest: "{{secrets_path}}/gitlab_login_info.txt"
         flat: yes
-      
+
+
+# ------------------------------------------------------------------ #
+#  SECTION 7 — Configure DNS                                         #
+# ------------------------------------------------------------------ #
+    - name: Configure Netplan to use Pi-hole DNS
+      become: true
+      copy:
+        dest: /etc/netplan/99-dns-config.yaml
+        content: |
+          network:
+            version: 2
+            ethernets:
+              '{{ ansible_default_ipv4.interface }}':  # Ensure this matches your interface name (e.g., ens3, eth0)
+                nameservers:
+                  addresses: [{{ cloud_service_vm_IPv4 }}]
+                dhcp4-overrides:
+                  use-dns: false  # Prevents DHCP from overwriting your Pi-hole setting
+      notify: apply netplan
+
+
+
 # ------------------------------------------------------------------ #
 #  SECTION 7 — GITLAB RUNNER SETUP                                     #
 # ------------------------------------------------------------------ #
@@ -227,3 +260,8 @@
           - "3. Run on gpu-worker"
           - "   gitlab-runner register --url {{ gitlab_external_url }} --token <TOKEN>"
           - "================================================"
+  
+  
+  handlers:
+    - name: apply netplan
+      shell: netplan apply
