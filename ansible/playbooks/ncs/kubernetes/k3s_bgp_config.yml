@@ -1,0 +1,76 @@
+- name: Configure OpenStack BGP Speaker using CLI
+  hosts: localhost
+  connection: local
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml 
+  vars:
+    master_ip: "{{ k3s_gateway_ipv4 }}"
+    local_asn: 65001
+    remote_asn: 65002
+    speaker_name: "k3s_bgp_speaker"
+    peer_name: "k3s_master_peer"
+  tags:
+    - k3s-bgp
+
+  tasks:
+    # 1. BGP SPEAKER
+    - name: Check if BGP Speaker exists
+      ansible.builtin.command: "openstack bgp speaker show {{ speaker_name }}"
+      register: speaker_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create BGP Speaker
+      ansible.builtin.command: 
+        cmd: "openstack bgp speaker create --local-as {{ local_asn }} --ip-version 4 --advertise-floating-ip-host-routes {{ speaker_name }}"
+      when: speaker_check.rc != 0
+
+    # 2. DRA AGENT ASSIGNMENT (The Missing Link)
+    - name: Get BGP Dynamic Routing Agent ID
+      ansible.builtin.command: "openstack network agent list --agent-type bgp -f value -c ID"
+      register: bgp_agent_id
+      changed_when: false
+
+    - name: Add Speaker to BGP Agent
+      ansible.builtin.command: "openstack bgp dragent add speaker {{ bgp_agent_id.stdout }} {{ speaker_name }}"
+      register: agent_add
+      failed_when: agent_add.rc != 0 and 'already exists' not in agent_add.stderr
+      when: bgp_agent_id.stdout != ""
+
+    - name: Retrieve Public Network ID via CLI
+      ansible.builtin.shell: |
+        openstack network show public -f value -c id
+      register: public_net_cmd
+      changed_when: false
+
+    - name: Set external_network_id fact
+      ansible.builtin.set_fact:
+        external_network_id: "{{ public_net_cmd.stdout.strip() }}"
+
+    # 3. Network ASSOCIATION
+    - name: Associate External Network with Speaker
+      ansible.builtin.shell: |
+        openstack bgp speaker add network {{ speaker_name }} {{ external_network_id }}
+      register: net_add
+      failed_when: net_add.rc != 0 and 'already associated' not in net_add.stderr
+      changed_when: "'already associated' not in net_add.stderr"
+
+    # 4. BGP PEER
+    - name: Check if BGP Peer exists
+      ansible.builtin.command: "openstack bgp peer show {{ peer_name }}"
+      register: peer_check
+      failed_when: false
+      changed_when: false
+
+    - name: Create BGP Peer
+      ansible.builtin.command:
+        cmd: "openstack bgp peer create --peer-ip {{ master_ip }} --remote-as {{ remote_asn }} --auth-type none {{ peer_name }}"
+      when: peer_check.rc != 0
+
+    # 5. PEER ASSOCIATION
+    - name: Associate Peer with Speaker
+      ansible.builtin.command: "openstack bgp speaker add peer {{ speaker_name }} {{ peer_name }}"
+      register: add_peer
+      failed_when: add_peer.rc != 0 and 'already added' not in add_peer.stderr
+      changed_when: "'already added' not in add_peer.stderr"

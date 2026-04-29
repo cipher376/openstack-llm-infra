@@ -10,6 +10,21 @@
   tags:
     - services
   tasks:
+    - name: Get image information by name
+      openstack.cloud.image_info:
+        image: "{{ ubuntu_image }}"
+      register: image_search
+
+    - name: Set the Image ID as a fact
+      set_fact:
+        target_image_id: "{{ image_search.images[0].id }}"
+      when: image_search.images | length > 0
+
+    - name: Debug the ID
+      debug:
+        msg: "The ID for target image is {{ target_image_id }}"
+      when: target_image_id is defined
+    
     - name: Deploy services vm
       community.general.terraform:
         project_path: "../../../../terraform/cloud-services"
@@ -22,21 +37,37 @@
           subnet: "{{ service_net }}"
           pinhole_admin_pass: "{{ pihole_admin_pass }}"
           vm_ipv4: "{{ cloud_service_vm_IPv4 }}"
-          image_uuid: "{{ ubuntu_minimal_uuid }}"
+          image_uuid: "{{ target_image_id }}"
           ssh_key_file: "{{ local_public_key }}"
           key_pair: "{{ default_key_pair }}"
 
+  
 
 - name: Wait for vault vm to become ready
   hosts: cloud_services
   gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml 
   tags:
     - services
   tasks:
+    - name: Dynamically update inventory for the next play
+      add_host:
+        name: "cloud-services"
+        groups: "reinitialized_nodes"
+        ansible_user: "ubuntu"
+        ansible_ssh_host: "{{ cloud_service_vm_IPv4 }}"
+        # Ensure it uses your private key
+        ansible_ssh_private_key_file: "{{ local_private_key }}"
+        # Since IPs might cycle, ignore strict host key checking for now
+        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no"
+
     - name: Ensure SSH is responding
-      wait_for_connection:
-        delay: 15      # Wait 10s before even trying
-        timeout: 300   # Give up after 5 mins
+      wait_for:
+        host: "{{ cloud_service_vm_IPv4 }}"
+        port: 22
+        timeout: 300
 
 
 
@@ -46,6 +77,8 @@
   become: true
   vars:
     project_path: "/opt/cloud-services"
+    unbound_conf_dir: "{{ project_path }}/unbound/conf"
+
   vars_files: 
     - ../../../../secrets/vault.yml   
     - ../../../vars.yml  
@@ -66,6 +99,12 @@
           - docker-compose-v2
           - curl 
           - git
+          - net-tools      # For ifconfig, route
+          - iputils-ping   # For ping
+          - traceroute     # To trace packet hops
+          - tcpdump        # To sniff traffic on br-ex or br-int
+          - dnsutils       # For nslookup and dig (vital for testing Unbound)
+          - iproute2       # For ip addr, ip link, ip netns (OpenStack namespaces)
         state: present
       retries: 3
       delay: 5
@@ -76,20 +115,86 @@
         state: stopped
         enabled: no
 
+    - name: Remove immutable flag if it exists (unlock file)
+      command: chattr -i /etc/resolv.conf
+      ignore_errors: yes
+      changed_when: false
+
     - name: Set static DNS for the host itself
       copy:
         dest: /etc/resolv.conf
         content: |
           nameserver 127.0.0.1
-          nameserver 172.16.5.1
+          nameserver 172.16.20.1
           nameserver 1.1.1.1
-          search ncs-cloud.lan
+          search ncs-cloud.lan internal.ncs-cloud.lan
+    
+    - name: Re-apply immutable flag (prevent DHCP/System overwrite)
+      command: chattr +i /etc/resolv.conf
+      ignore_errors: yes
 
     - name: Create project directory
       file:
         path: "{{ project_path }}"
         state: directory
         mode: '0755'
+
+
+    - name: Create Unbound configuration directory
+      file:
+        path: "{{ unbound_conf_dir }}"
+        state: directory
+        mode: '0755'
+    
+    - name: Download the latest Root Hints (Authoritative Source)
+      get_url:
+        url: https://www.internic.net/domain/named.root
+        dest: "{{ unbound_conf_dir }}/root.hints"
+        mode: '0644'
+
+    - name: Configure Unbound for Pi-hole recursion
+      ansible.builtin.copy:
+        dest: "{{ unbound_conf_dir }}/unboud-pi-hole.conf"
+        content: |
+          server:
+            # Listen on all interfaces inside the container
+            interface: 0.0.0.0
+            port: 5335
+            do-ip4: yes
+            do-udp: yes
+            do-tcp: yes
+
+            # CRITICAL: This must be the path INSIDE the container
+            root-hints: "/opt/unbound/etc/unbound/root.hints"
+
+            # Security: Hide identity/version
+            hide-identity: yes
+            hide-version: yes
+
+            # Privacy: Enable DNSSEC validation
+            harden-glue: yes
+            harden-dnssec-stripped: yes
+            use-caps-for-id: yes
+
+            # Performance for your specs
+            num-threads: 1
+            msg-cache-slabs: 4
+            rrset-cache-slabs: 4
+            infra-cache-slabs: 4
+            key-cache-slabs: 4
+
+            # Access Control: Docker needs to allow its own bridge network
+            access-control: 127.0.0.0/8 allow
+            access-control: 172.16.0.0/12 allow
+            access-control: 192.168.0.0/16 allow
+            access-control: 10.0.0.0/8 allow
+            
+
+            # Cache sizes (optimized for your 40GB RAM)
+            rrset-cache-size: 256m
+            msg-cache-size: 128m
+      register: unbound_config
+
 
     - name: Deploy Docker Compose file
       copy:
@@ -105,16 +210,39 @@
                 - "80:80/tcp"
               environment:
                 TZ: 'America/Edmonton'
+                # PIHOLE_DNS_ is the environment variable to set upstream DNS on boot
+                PIHOLE_DNS_: 'unbound#5335' 
                 FTLCONF_webserver_api_password: '{{ pihole_admin_pass }}'
               restart: always
+
+            unbound:
+              image: mvance/unbound:latest
+              container_name: unbound
+              restart: always
+              # You technically don't need to expose 5335 to the host anymore 
+              # since Pi-hole talks to it over the internal bridge, but it's fine for testing.
+              ports:
+                - "5335:5335/tcp"
+                - "5335:5335/udp"
+              volumes:
+                # Quote the volume paths to prevent YAML parsing errors with variables
+                - "{{ unbound_conf_dir }}/unboud-pi-hole.conf:/opt/unbound/etc/unbound/unbound.conf"
+                - "{{ unbound_conf_dir }}/root.hints:/opt/unbound/etc/unbound/root.hints"
+              healthcheck:
+                # Using localhost check is safer if external DNS is flaky during boot
+                test: ["CMD-SHELL", "drill -p 5335 localhost @127.0.0.1 || exit 1"]
+                interval: 30s
+                timeout: 10s
+                retries: 3
 
             uptime-kuma:
               container_name: uptime-kuma
               image: louislam/uptime-kuma:1
               ports:
                 - "3001:3001/tcp"
+              # Point Kuma directly to the Pi-hole container for resolution
               dns:
-                - {{ cloud_service_vm_IPv4 }}
+                - 127.0.0.1 
               volumes:
                 - uptime-kuma:/app/data
               restart: always
@@ -128,6 +256,8 @@
                 PGID: 1000
                 TZ: America/Edmonton
                 SERVERPORT: 51820
+                # PEER_DNS should point to your Pi-hole so VPN clients get ad-blocking
+                PEER_DNS: "{{ cloud_service_vm_IPv4 }}"
               ports:
                 - "51820:51820/udp"
               volumes:
@@ -140,4 +270,15 @@
 
     - name: Start the Services
       shell: "docker compose -f {{ project_path }}/docker-compose.yml up -d"
+      delay: 10
+      timeout: 30
+      retries: 3
+
+    - name: Restart Unbound container if config changed
+      community.docker.docker_container:
+        name: unbound
+        image: mvance/unbound:latest
+        state: started
+        restart: yes
+      when: unbound_config.changed
   

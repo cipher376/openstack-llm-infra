@@ -11,6 +11,21 @@
     - k3s
     - k3s-vms
   tasks:
+    - name: Get image information by name
+      openstack.cloud.image_info:
+        image: "{{ ubuntu_image }}"
+      register: image_search
+
+    - name: Set the Image ID as a fact
+      set_fact:
+        target_image_id: "{{ image_search.images[0].id }}"
+      when: image_search.images | length > 0
+
+    - name: Debug the ID
+      debug:
+        msg: "The ID for target image is {{ target_image_id }}"
+      when: target_image_id is defined
+
     - name: Deploy  k3s vms
       community.general.terraform:
         project_path: "../../../../terraform/kubernetes"
@@ -20,7 +35,7 @@
           auth_url: "{{ os_auth_url }}"
           region: "{{ os_region_name }}"
           ssh_key_file: "{{ local_public_key }}"
-          image_uuid: "{{ ubuntu_minimal_uuid }}"
+          image_uuid: "{{ target_image_id }}"
           k3s_master_01_vm_ipv4: "{{ k3s_mater_01_ipv4 }}"
           k3s_worker_01_vm_ipv4: "{{ k3s_worker_01_ipv4 }}"
           k3s_worker_02_vm_ipv4: "{{ k3s_worker_02_ipv4 }}"
@@ -39,6 +54,10 @@
       wait_for_connection:
         delay: 15      # Wait 10s before even trying
         timeout: 300   # Give up after 5 mins
+    - name: Wait for cloud-init to finish
+      command: cloud-init status --wait
+      changed_when: false
+      failed_when: false
 
 
 - name: "Install and Configure K3s Cluster (Master + Workers)"
@@ -63,6 +82,8 @@
     inference_taint_value: "inference"
     inference_taint_effect: "NoExecute"
 
+    router_name: "vpc_router"
+
     k3s_workers:
       - name: "gpu-worker-01"
         # ip: "{{ hostvars['gpu-worker-01']['ansible_host'] }}"
@@ -70,11 +91,11 @@
           - "node-role.kubernetes.io/gpu-worker=true"
           - "hardware=gpu"
           - "nvidia.com/gpu=true"
-      - name: "inference-worker-01"
-        # ip: "{{ hostvars['inference-worker-01']['ansible_host'] }}"
-        labels:
-          - "node-role.kubernetes.io/inference=true"
-          - "hardware=cpu"
+      # - name: "inference-worker-01"
+      #   # ip: "{{ hostvars['inference-worker-01']['ansible_host'] }}"
+      #   labels:
+      #     - "node-role.kubernetes.io/inference=true"
+      #     - "hardware=cpu"
 
   tasks:
     
@@ -444,6 +465,7 @@
 # ------------------------------------------------------------------ #
 #  SECTION 5 — INSTALL CILIUM CLI (MASTER ONLY)                        #
 # ------------------------------------------------------------------ #
+   
 
     - name: Check if Cilium CLI is installed
       command: which cilium
@@ -559,14 +581,15 @@
           # Gateway API & Ingress
           gatewayAPI:
             enabled: true
-            secretsNamespace:
-              name: cilium-secrets
-
-          # L2 Announcements (Allows your Home Lab to see Service IPs)
+            externalEnvoyProxy:
+              enabled: true
+          
+          #L2 Announcements (Allows your Home Lab to see Service IPs)
           l2announcements:
             enabled: true
-            interfaces:
-              - "{{ network_interface }}"
+            leaseDuration: 15s
+            leaseRenewDeadline: 5s
+            leaseRetryPeriod: 2s
           
           externalIPs:
             enabled: true
@@ -576,9 +599,7 @@
             # algorithm: maglev
             # mode: snat  # ← CHANGED FROM dsr TO snat
             l7:
-              enabled: true
               backend: envoy
-              port: 8080
 
           # LoadBalancer IP Pool configuration
           ipPool:
@@ -636,6 +657,7 @@
       run_once: true
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      
 
     - name: Wait for Cilium pods to be ready
       shell: |
@@ -679,17 +701,16 @@
           kind: Gateway
           metadata:
             name: cilium-gateway
-            namespace: cilium-secrets
-            # annotations:
-            #   # This tells Cilium exactly which pool to pull from
-            #   io.cilium/lb-ipam-ips: "172.16.0.200" # Choose one from your /27 range
+            namespace: kube-system
+            annotations:
+              cilium.io/gateway-type: shared
           spec:
             gatewayClassName: cilium
             listeners:
               - name: http
                 protocol: HTTP
                 port: 80
-                hostname: "*.lab.lan"
+                hostname: "*.lan"
                 allowedRoutes:
                   namespaces:
                     from: All
@@ -698,6 +719,8 @@
       run_once: true
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      
+
 
     - name: Create Cilium GatewayClass
       kubernetes.core.k8s:
@@ -707,6 +730,9 @@
           kind: GatewayClass
           metadata:
             name: cilium
+            annotations:
+              # This is the "magic" link to the shared Envoy pods
+              io.cilium/gateway-type: shared
           spec:
             controllerName: io.cilium/gateway-controller
       become: true
@@ -714,6 +740,8 @@
       when: ansible_host == k3s_master_ip
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      
+  
 
     - name: Create Cilium L2 Announcement Policy
       kubernetes.core.k8s:
@@ -726,30 +754,143 @@
             spec:
               blocks:
                 - cidr: "{{ cilium_lb_ip_range }}" 
+
           - apiVersion: cilium.io/v2alpha1
             kind: CiliumL2AnnouncementPolicy
             metadata:
               name: homelab-l2-policy
-              namespace: kube-system
             spec:
-              # Matches any interface starting with 'e' (eth0, enp3s0, etc.)
+              nodeSelector:
+                matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: In
+                    values:
+                      - k3s-master-01
+                matchLabels:
+                  kubernetes.io/hostname: k3s-master-01
               interfaces:
-                - ens3 # Matches eth0 (Common on VMs/Master)
-              externalIPs: true
+                - "^ens3$"  # Using regex ensures an exact match for the interface
+              externalIPs: false
               loadBalancerIPs: true
-              # This links the policy to your existing pool
-              # serviceSelector:
-              #   matchLabels:
-              #     io.cilium.static-ip: "true" # Optional, or leave empty for all
       become: true
       delegate_to: k3s-master-01
       run_once: true
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      
+
+#===========================================================
+#  CONFIGURE BGP 
+#===========================================================
+    # - name: Gather system facts
+    #   ansible.builtin.setup:
+    #   run_once: true
+  
+
+    # - name: Enable BGP in Cilium ConfigMap
+    #   kubernetes.core.k8s:
+    #     state: patched
+    #     definition:
+    #       apiVersion: v1
+    #       kind: ConfigMap
+    #       metadata:
+    #         name: cilium-config
+    #         namespace: kube-system
+    #       data:
+    #         enable-bgp-control-plane: "true"
+    #   run_once: true
+    #   delegate_to: k3s-master-01
+   
+
+    # - name: Restart Cilium Agent to apply BGP config
+    #   kubernetes.core.k8s:
+    #     state: patched
+    #     kind: DaemonSet
+    #     name: cilium
+    #     namespace: kube-system
+    #     definition:
+    #       spec:
+    #         template:
+    #           metadata:
+    #             annotations:
+    #               restartedAt: "{{ ansible_date_time.iso8601 }}"
+    #   run_once: true
+    #   delegate_to: k3s-master-01
+  
+
+
+    # - name: Get OpenStack router external IP
+    #   openstack.cloud.routers_info:
+    #     name: "{{ router_name }}"
+    #   register: router_info
+    #   delegate_to: localhost
+    #   become: false
+    #   run_once: true
+  
+    
+    # - name: Debug router info structure
+    #   ansible.builtin.debug:
+    #     var: router_info
+    #   run_once: true
+
+    # - name: Extract external IP address
+    #   ansible.builtin.set_fact:
+    #     openstack_router_ip: >-
+    #       {{
+    #         (router_info.routers[0].external_gateway_info.external_fixed_ips | first).ip_address
+    #         if (router_info.routers is defined and router_info.routers | length > 0 and router_info.routers[0].external_gateway_info.external_fixed_ips)
+    #         else ''
+    #       }}
+    #   delegate_to: localhost
+    #   become: false
+    #   run_once: true
+
+
+
+    # - name: Apply Cilium BGP Peering Policy
+    #   kubernetes.core.k8s:
+    #     state: present
+    #     definition:
+    #       apiVersion: "cilium.io/v2alpha1"
+    #       kind: CiliumBGPPeeringPolicy
+    #       metadata:
+    #         name: openstack-bgp-peering
+    #       spec:
+    #         nodeSelector:
+    #           matchLabels:
+    #             kubernetes.io/hostname: k3s-master-01
+    #         virtualRouters:
+    #           - localASN: 65002
+    #             exportPodCIDR: false
+    #             routerID: "10.10.30.5"
+    #             neighbors:
+    #               - peerAddress: "172.16.20.47/32"
+    #                 peerASN: 65001
+    #             serviceSelector:
+    #               matchExpressions:
+    #                 - {key: "io.cilium.gateway/name", operator: Exists}
+    #   delegate_to: k3s-master-01
+    #   run_once: true
+  
  
+    # - name: Label the Gateway LoadBalancer service for BGP advertisement
+    #   kubernetes.core.k8s:
+    #     state: patched
+    #     definition:
+    #       apiVersion: v1
+    #       kind: Service
+    #       metadata:
+    #         name: cilium-gateway-cilium-gateway
+    #         namespace: cilium-secrets
+    #         labels:
+    #           io.cilium.gateway/name: cilium-gateway
+    #   delegate_to: k3s-master-01
+    #   run_once: true
+    #   environment:
+    #     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
   
 # ------------------------------------------------------------------ #
-#  SECTION 9 — LABEL WORKER NODES (FROM MASTER)                       #
+#  SECTION 9 — LABEL WORKER NODES (FROM MASTER)                      #
 # ------------------------------------------------------------------ #
 
     - name: Wait for all nodes to join the cluster

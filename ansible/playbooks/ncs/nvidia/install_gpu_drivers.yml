@@ -78,7 +78,6 @@
 
     - name: Trigger DKMS autoinstall to rebuild modules
       command: dkms autoinstall -k {{ ansible_kernel }}
-      when: header_install.changed
       register: dkms_result
       changed_when: "'Installing' in dkms_result.stdout"
 

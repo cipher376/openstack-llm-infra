@@ -1,0 +1,138 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../vars.yml    
+  tags:
+    - bastion-server
+  tasks:
+    - name: Get image information by name
+      openstack.cloud.image_info:
+        image: "{{ ubuntu_image }}"
+      register: image_search
+
+    - name: Set the Image ID as a fact
+      set_fact:
+        target_image_id: "{{ image_search.images[0].id }}"
+      when: image_search.images | length > 0
+
+    - name: Debug the ID
+      debug:
+        msg: "The ID for target image is {{ target_image_id }}"
+      when: target_image_id is defined
+
+    - name: Deploy the bastion
+      community.general.terraform:
+        project_path: "../../../../terraform/bastion"
+        state: present
+        force_init: yes
+        variables:
+          auth_url: "{{ os_auth_url }}"          # from your vars.yml or env
+          region: "{{ os_region_name }}"         # from your vars.yml
+          image_uuid: "{{target_image_id}}"
+          ssh_key_file: "{{ local_public_key }}"
+          ssh_private_key_file: "{{ local_private_key }}"
+          key_pair: "{{ default_key_pair }}"
+          cloud_service_vm_IPv4: "{{ cloud_service_vm_IPv4 }}"
+          bastion_ipv4: "{{ bastion_insternal_ip }}"
+
+    - name: Get VM details
+      openstack.cloud.server_info:
+        server: "bastion-server"
+      register: vm_details
+
+    - name: Extract Floating IP
+      set_fact:
+        external_ip: "{{ (vm_details.servers[0].addresses.values() | flatten | selectattr('OS-EXT-IPS:type', 'equalto', 'floating') | map(attribute='addr') | list) | first }}"
+        cacheable: yes
+      
+    - name: Verify Floating IP was captured
+      assert:
+        that:
+          - external_ip is not none
+        fail_msg: "Floating IP not found!."
+    
+    - name: Display the External IP
+      debug:
+        msg: "The external (Floating) IP for the VM is: {{ external_ip | default('None Assigned') }}"
+          
+    - name: Update local host file with new IP
+      ansible.builtin.blockinfile:
+        dest: "{{ host_file_path }}"
+        content: |
+          [bastion_server]
+          bastion-server ansible_host={{ external_ip }} ansible_user=ubuntu
+
+
+    - name: Dynamically update inventory for the next play
+      add_host:
+        name: "bastion-server"
+        groups: "reinitialized_nodes"
+        ansible_user: "ubuntu"
+        ansible_ssh_host: "{{ external_ip }}"
+        # Ensure it uses your private key
+        ansible_ssh_private_key_file: "{{ local_private_key }}"
+        # Since IPs might cycle, ignore strict host key checking for now
+        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no"
+
+    - name: Wait for SSH to be available
+      wait_for:
+        host: "{{ external_ip }}"
+        port: 22
+        timeout: 300
+    
+    - name: Wait for cloud-init to finish
+      command: cloud-init status --wait
+      changed_when: false
+      failed_when: false
+      delegate_to: "{{ external_ip }}"
+      run_once: true
+      remote_user: ubuntu
+    
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+      delegate_to: "{{ external_ip }}"
+      run_once: true
+      become: true
+      remote_user: ubuntu
+
+    - name: Install Network Troubleshooting Suite
+      apt:
+        name:
+          - net-tools      # For ifconfig, route
+          - iputils-ping   # For ping
+          - traceroute     # To trace packet hops
+          - tcpdump        # To sniff traffic on br-ex or br-int
+          - mtr-tiny       # Combined ping/traceroute
+          - dnsutils       # For nslookup and dig (vital for testing Unbound)
+          - iproute2       # For ip addr, ip link, ip netns (OpenStack namespaces)
+          - nmap           # To check port 5335 visibility
+          - iperf3         # To test throughput under load
+          - curl
+        state: present
+        update_cache: yes
+      delegate_to: "{{ external_ip }}"
+      run_once: true
+      become: true
+      remote_user: ubuntu
+
+    - name: Ensure latest network tools are installed
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - tcpdump
+        - dnstop
+        - htop
+        - nload 
+      delegate_to: "{{ external_ip }}"
+      run_once: true
+      become: true 
+      remote_user: ubuntu
+
+

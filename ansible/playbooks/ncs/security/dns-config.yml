@@ -1,0 +1,45 @@
+---
+- name: Configure VMs to use Pi-hole DNS
+  hosts: all_vms
+  become: yes
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml 
+  vars:
+    primary_dns: "{{ local_dns_IPv4 }}"
+    # secondary_dns: "1.1.1.1"
+    dns_search: "ncs-cloud.lan internal.ncs-cloud.lan"
+  tags:
+    - dns
+  tasks:
+    - name: Remove immutable flag if it exists (unlock file)
+      command: chattr -i /etc/resolv.conf
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Delete existing resolv.conf (removes symlinks)
+      file:
+        path: /etc/resolv.conf
+        state: absent
+
+    - name: Create new static resolv.conf
+      copy:
+        dest: /etc/resolv.conf
+        content: |
+          search {{ dns_search }}
+          nameserver {{ primary_dns }}
+          options timeout:2 attempts:3
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Ensure /etc/hosts has the local hostname (Fixes sudo error)
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127.0.1.1'
+        line: "127.0.1.1 {{ inventory_hostname }}"
+        state: present
+
+    - name: Re-apply immutable flag (prevent DHCP/System overwrite)
+      command: chattr +i /etc/resolv.conf
+      ignore_errors: yes

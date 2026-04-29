@@ -2,11 +2,17 @@
 # Setup openstack Network and security groups
 #--------------------------------------------------------------------------------#
 
-- import_playbook: ansible/playbooks/ncs/common/01-provision_network.yml
-- import_playbook: ansible/playbooks/ncs/common/02-create_flavors.yml
-- import_playbook: ansible/playbooks/ncs/common/03-upload_cloud_images.yml
-- import_playbook: ansible/playbooks/ncs/common/04-provision_bastion.yml
+- import_playbook: ansible/playbooks/ncs/common/00_configure_cinder_tiers.yml
+- import_playbook: ansible/playbooks/ncs/common/01_provision_network.yml
+- import_playbook: ansible/playbooks/ncs/common/02_provision_security_groups.yml
+- import_playbook: ansible/playbooks/ncs/common/03_create_flavors.yml
+- import_playbook: ansible/playbooks/ncs/common/04_upload_cloud_images.yml
+#--------------------------------------------------------------------------------#
+# Setup openstack Network and security groups
+#--------------------------------------------------------------------------------#
+- import_playbook: ansible/playbooks/ncs/common/05_provision_bastion.yml
 - import_playbook: ansible/playbooks/ncs/cloud-services/services-conf.yml
+- import_playbook: ansible/playbooks/ncs/security/dns-config.yml
 
 #--------------------------------------------------------------------------------#
 # Deploy  vaults
@@ -25,7 +31,8 @@
 # Deploy kubernetes vms
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_config.yml
-- import_playbook: ansible/playbooks/ncs/kubernetes/k3s_magnum_config.yml
+- import_playbook: ansible/playbooks/ncs/kubernetes/k3s_vault_config.yml
+# - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_bgp_config.yml
 
 #--------------------------------------------------------------------------------#
 # Install Nvidia GPU drivers
@@ -43,5 +50,5 @@
 #--------------------------------------------------------------------------------#
 # Deploy ARGOCD
 #--------------------------------------------------------------------------------#
-# - import_playbook: ansible/playbooks/ncs/nvidia/01-install_gpu_drivers.yml
+- import_playbook: ansible/playbooks/ncs/kubernetes/argocd.yml
 

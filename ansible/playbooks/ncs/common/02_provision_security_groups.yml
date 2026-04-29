@@ -5,19 +5,16 @@
 - name: Set up vm nodes with terraform
   hosts: localhost
   vars_files: 
-    - ../../../secrets/vault.yml   
+    - ../../../../secrets/vault.yml   
     - ../../../vars.yml    
   tags:
-    - k3s-magnum
+    - blue-print
+    - security-group
   tasks:
-    - name: Deploy  k3s vms
+    - name: Deploy the security-groups
       community.general.terraform:
-        project_path: "../../../../terraform/kubernetes_magnum"
+        project_path: "../../../../terraform/security-groups"
         state: present
         force_init: yes
         variables:
-          auth_url: "{{ os_auth_url }}"
-          region: "{{ os_region_name }}"
-          ssh_key_pair: "{{ default_key_pair }}"
-          image: "{{ ubuntu_image }}"
-          
+          internal_network: "{{ internal_network }}"

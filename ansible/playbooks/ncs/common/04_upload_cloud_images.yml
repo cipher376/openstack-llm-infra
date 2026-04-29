@@ -21,7 +21,7 @@
         url: "https://cloud-images.ubuntu.com/minimal/releases/noble/release/ubuntu-24.04-minimal-cloudimg-amd64.img"
         filename: "ubuntu-24-minimal.img"
         
-      - name: "Debian-12-Cloud"
+      - name: "target image"
         url: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
         filename: "debian-12.qcow2"
 
@@ -45,7 +45,7 @@
       loop: "{{ image_results.results }}"
       # Fix: Accessing the stat result from the registered loop
       when: not item.stat.exists
-
+    
     - name: Upload to OpenStack
       openstack.cloud.image:
         state: present
@@ -62,3 +62,5 @@
       when: 
         - not ansible_check_mode
         - (item.stat.exists or hostvars['localhost']['download_task'] is not failed)
+      retries: 30
+      delay: 10

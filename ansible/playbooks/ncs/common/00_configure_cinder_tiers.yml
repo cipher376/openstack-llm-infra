@@ -1,0 +1,23 @@
+---
+- name: Register Cinder Volume Types
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    storage_tiers:
+      - { name: "ncs-nvme", backend: "NVME_Storage" }
+      - { name: "ncs-ssd",  backend: "SSD_Storage" }
+      - { name: "ncs-hdd",  backend: "HDD_Storage" }
+  tags:
+    - blue-print
+
+  tasks:
+    - name: Create Volume Types and Link to Backends
+      openstack.cloud.volume_type:
+        state: present
+        name: "{{ item.name }}"
+        is_public: true
+        extra_specs:
+          volume_backend_name: "{{ item.backend }}"
+      loop: "{{ storage_tiers }}"

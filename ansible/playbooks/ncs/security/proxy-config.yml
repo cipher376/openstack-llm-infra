@@ -4,7 +4,6 @@
   become: yes
   tags:
     - proxy
-    - bastion-server
   vars_files: 
     - ../../../secrets/vault.yml   
     - ../../../vars.yml   
@@ -40,7 +39,7 @@
               client_max_body_size 10G;
 
               location / {
-                  proxy_pass http://{{ gitlab_vm_ipv4 }};
+                  proxy_pass http://{{ gitlab_url }};
         
                   # 2. Standard Proxy Headers
                   proxy_set_header Host $host;
@@ -51,7 +50,7 @@
                   # 3. Handle Redirects
                   # This ensures that if GitLab sends a 302 to its internal IP, 
                   # Nginx rewrites it to your external domain.
-                  proxy_redirect http://{{ gitlab_vm_ipv4 }}/ http://$host/;
+                  proxy_redirect http://{{ gitlab_url }}/ http://$host/;
 
                   # 4. Connection Settings for WebSockets (needed for GitLab Terminal/Live logs)
                   proxy_http_version 1.1;
@@ -82,13 +81,13 @@
             # 1. Filer Interface (The main data access point)
               server {
                   listen 80;
-                  server_name filer.seaweedfs.ncs-cloud.lan;
+                  server_name {{ filer_seaweedfs_external_url }};
 
                   client_max_body_size 0;
                   proxy_buffering off;
 
                   location / {
-                      proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8888;
+                      proxy_pass http://{{ seaweedfs_url }}:8888;
                       proxy_set_header Host $host;
                       proxy_set_header X-Real-IP $remote_addr;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -99,10 +98,10 @@
               # 2. Master UI (Cluster management)
               server {
                   listen 80;
-                  server_name master.seaweedfs.ncs-cloud.lan;
+                  server_name {{ master_seaweedfs_external_url }};
 
                   location / {
-                      proxy_pass http://{{ seaweedfs_vm_ipv4 }}:9333;
+                      proxy_pass http://{{ seaweedfs_url }}:9333;
                       proxy_set_header Host $host;
                       proxy_set_header X-Real-IP $remote_addr;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -113,13 +112,13 @@
               # 3. S3 Gateway (API access for ML tools)
               server {
                   listen 80;
-                  server_name s3.seaweedfs.ncs-cloud.lan;
+                  server_name {{ s3_seaweedfs_external_url }};
 
                   client_max_body_size 0;
                   proxy_buffering off;
 
                   location / {
-                      proxy_pass http://{{ seaweedfs_vm_ipv4 }}:8333;
+                      proxy_pass http://{{ seaweedfs_url }}:8333;
                       proxy_set_header Host $host;
                       proxy_set_header X-Real-IP $remote_addr;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -142,18 +141,18 @@
         content: |
           server {
               listen 80;
-              server_name {{ pihole_external_urls }};
+              server_name {{ pihole_external_url }};
 
               location /admin/ {
-              proxy_pass http://{{ cloud_service_vm_IPv4 }}/admin/;
+              proxy_pass http://{{ pihole_url }}/admin/;
               include /etc/nginx/proxy_params;
-              proxy_redirect http://{{ cloud_service_vm_IPv4 }}/ /;
+              proxy_redirect http://{{ pihole_url }}/ /;
           }
 
           # 2. CRITICAL: Handle the API calls specifically
           # This prevents the 301/308 redirect on POST requests
           location /api/ {
-              proxy_pass http://{{ cloud_service_vm_IPv4 }}/api/;
+              proxy_pass http://{{ pihole_url }}/api/;
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
               proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -163,8 +162,8 @@
           # 3. Handle the login and other root-level redirects
           location / {
               # If the backend sends a redirect, we capture and fix it here
-              proxy_pass http://{{ cloud_service_vm_IPv4 }};
-              proxy_redirect http://{{ cloud_service_vm_IPv4 }}/ /;
+              proxy_pass http://{{ pihole_url }};
+              proxy_redirect http://{{ pihole_url }}/ /;
 
               # If it's just the root, send them to admin
               if ($request_uri = "/") {
@@ -190,10 +189,10 @@
         content: |
             server {
             listen 80;
-            server_name {{ uptime_external_urls }};
+            server_name {{ uptime_external_url }};
 
             location / {
-                proxy_pass http://{{ cloud_service_vm_IPv4 }}:3001; # Default Uptime Kuma port
+                proxy_pass http://{{ uptime_url }}:3001; # Default Uptime Kuma port
 
                 # WebSocket Support (CRITICAL)
                 proxy_http_version 1.1;
@@ -220,7 +219,91 @@
         state: link
       notify: "nginx config changed"
 
+#==========================ArgoCD============================================
+    - name: Configure Services  access (ArgoCD)
+      copy:
+        dest: /etc/nginx/sites-available/argocd-proxy
+        content: |
+            server {
+                listen 80;
+                server_name {{ argocd_external_url }};
 
+                location / {
+                    proxy_pass http://{{ argocd_url }};
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                    # Ensure websockets work for the Argo UI
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+
+                    # Vault Specifics
+                    proxy_connect_timeout 60s;
+                    proxy_read_timeout 60s;
+
+                    # Increase body size for uploading large secret files/policies
+                    client_max_body_size 10M;
+                }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable argocd proxy site
+      file:
+        src: /etc/nginx/sites-available/argocd-proxy
+        dest: /etc/nginx/sites-enabled/argocd-proxy
+        state: link
+      notify: "nginx config changed"
+
+
+#==========================Vault============================================
+    - name: Configure Services  access (Vault)
+      copy:
+        dest: /etc/nginx/sites-available/vault-proxy
+        content: |
+            server {
+                listen 80;
+                server_name {{ vault_url }};
+            
+                # 1. Force redirect from the root / to /ui/
+                location = / {
+                    return 301 /ui/;
+                }
+            
+                # 2. Handle all other requests (UI assets and API calls)
+                location / {
+                    # Point to the base URL without the /ui/ suffix
+                    proxy_pass http://{{ vault_url }}:8200;
+                    
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+            
+                    # WebSocket support (Crucial for Vault UI)
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+            
+                    # Vault Specifics
+                    proxy_connect_timeout 60s;
+                    proxy_read_timeout 60s;
+                    client_max_body_size 10M;
+            
+                    # Ensure that Nginx correctly handles redirects sent by Vault
+                    proxy_redirect off;
+                }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable vault proxy site
+      file:
+        src: /etc/nginx/sites-available/vault-proxy
+        dest: /etc/nginx/sites-enabled/vault-proxy
+        state: link
+      notify: "nginx config changed"
+      
     - name: Remove Default Nginx Site
       file:
         path: /etc/nginx/sites-enabled/default

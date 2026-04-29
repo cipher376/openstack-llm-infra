@@ -1,0 +1,299 @@
+#=============================================================================
+# Play 3: Configure Cluster Secrets Store to link to the vault.
+# ============================================================================
+- name: Configure Kubernetes External Secrets Backend
+  hosts: k3s_master
+  become: false
+  vars_files:
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml
+  tags:
+    - k3s-vault
+
+  vars:
+    # The IP of your dedicated Vault VM
+    vault_port: "8200"
+    # The mount path for k8s auth in Vault (usually 'kubernetes')
+    vault_auth_path: "kubernetes"
+    # The role name we created in the previous Ansible step
+    vault_role: "argocd-role"
+    target_namespace: argocd
+    operator_namespace: external-secrets
+    operator_sa: external-secrets
+
+  tasks:
+    - name: Add External Secrets Helm repo
+      kubernetes.core.helm_repository:
+        name: external-secrets
+        repo_url: "https://charts.external-secrets.io"
+
+    - name: Install External Secrets Operator and CRDs
+      kubernetes.core.helm:
+        name: external-secrets
+        chart_ref: external-secrets/external-secrets
+        release_namespace: external-secrets
+        create_namespace: true
+        values:
+          installCRDs: true
+        wait: true
+
+    - name: Refresh Kubernetes API cache
+      meta: reset_connection
+
+    - name: Wait for ClusterSecretStore CRD to be fully established
+      kubernetes.core.k8s_info:
+        kind: CustomResourceDefinition
+        name: clustersecretstores.external-secrets.io
+      register: crd_status
+      until: crd_status.resources | length > 0
+      retries: 10
+      delay: 5
+
+    - name: Create Role to allow token creation in {{ target_namespace }}
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: external-secrets-tokenrequest
+            namespace: "{{ target_namespace }}"
+          rules:
+            - apiGroups: [""]
+              resources: ["serviceaccounts/token"]
+              verbs: ["create"]
+
+    - name: Create RoleBinding to bind Role to operator service account
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: external-secrets-tokenrequest
+            namespace: "{{ target_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: external-secrets-tokenrequest
+          subjects:
+            - kind: ServiceAccount
+              name: "{{ operator_sa }}"
+              namespace: "{{ operator_namespace }}"
+
+    - name: Verify Role exists
+      kubernetes.core.k8s_info:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: Role
+        name: external-secrets-tokenrequest
+        namespace: "{{ target_namespace }}"
+      register: role_status
+
+    - name: Verify RoleBinding exists
+      kubernetes.core.k8s_info:
+        api_version: rbac.authorization.k8s.io/v1
+        kind: RoleBinding
+        name: external-secrets-tokenrequest
+        namespace: "{{ target_namespace }}"
+      register: binding_status
+
+    - name: Display verification results
+      debug:
+        msg:
+          - "Role created: {{ role_status.resources | length > 0 }}"
+          - "RoleBinding created: {{ binding_status.resources | length > 0 }}"
+    
+    - name: Deploy ClusterSecretStore for Standalone Vault
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: external-secrets.io/v1
+          kind: ClusterSecretStore
+          metadata:
+            name: vault-backend
+          spec:
+            provider:
+              vault:
+                server: "http://{{ cluster_vault_address }}:{{ vault_port }}"
+                path: "secret"
+                version: "v2"
+                auth:
+                  kubernetes:
+                    # Path where the kubernetes auth method is enabled in Vault
+                    mountPath: "{{ vault_auth_path }}"
+                    # The role defined in Vault that allows this access
+                    role: "{{ vault_role }}"
+                    audience: "https://kubernetes.default.svc.cluster.local"
+                    serviceAccountRef:
+                      # name: argocd-repo-server
+                      # namespace: argocd
+                      name: external-secrets
+                      namespace: external-secrets
+
+
+# =============================================================================
+# Play: Configure Service Account and Token for vault on K3s
+# =============================================================================
+- name: Create Vault Reviewer ServiceAccount and Token
+  hosts: k3s_master
+  tags:
+    - k3s-vault
+    
+  tasks:
+    - name: Create vault-auth namespace
+      kubernetes.core.k8s:
+        name: vault-auth
+        kind: Namespace
+        state: present
+
+    - name: Create Vault Reviewer ServiceAccount
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: vault-reviewer
+            namespace: vault-auth
+
+    - name: Bind system:auth-delegator to vault-reviewer
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: vault-reviewer-binding
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: system:auth-delegator
+          subjects:
+            - kind: ServiceAccount
+              name: vault-reviewer
+              namespace: vault-auth
+
+    - name: Create long-lived token secret for Vault
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: vault-reviewer-token
+            namespace: vault-auth
+            annotations:
+              kubernetes.io/service-account.name: vault-reviewer
+          type: kubernetes.io/service-account-token
+
+    - name: Wait for token to be generated
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: vault-reviewer-token
+        namespace: vault-auth
+      register: reviewer_secret
+      until: reviewer_secret.resources[0].data.token is defined
+      retries: 5
+      delay: 2
+
+    - name: Set token fact for Vault node
+      set_fact:
+        vault_reviewer_jwt: "{{ reviewer_secret.resources[0].data.token | b64decode }}"
+
+
+# =============================================================================
+# Play: Transfer K3s CA to Vault
+# =============================================================================
+- name: Transfer K3s CA Certificate to Vault VM
+  hosts: k3s_master
+  become: true
+  vars_files:
+    - ../../../../secrets/vault.yml
+    - ../../../vars.yml
+  tags:
+    - k3s-vault
+    
+  tasks:
+    - name: Read K3s CA certificate from Master
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/tls/server-ca.crt
+      register: k3s_ca_file
+
+    - name: Push CA certificate to Vault VM
+      ansible.builtin.copy:
+        dest: /etc/vault.d/k3s-ca.crt
+        content: "{{ k3s_ca_file.content | b64decode }}"
+        owner: vault
+        group: vault
+        mode: '0644'
+      delegate_to: "cluster_vault"
+
+
+# =============================================================================
+# Play: Configure Vault-to-K3s Trust
+# =============================================================================
+- name: Link Vault to K3s API
+  hosts: cluster-vault # Your dedicated Vault VM
+  become: true
+  tags:
+    - k3s-vault
+    
+  vars_files:
+    - ../../../../secrets/vault.yml
+    - ../../../vars.yml
+  vars:
+    # 1. The Internal IP of your K3s Master
+    k3s_api_host: "{{ k3s_master_01_ipv4 }}" 
+    # 2. Path to the CA cert (usually /var/lib/rancher/k3s/server/tls/server-ca.crt)
+    # We will read this from the master or a local file
+    k3s_ca_cert_path: "/etc/vault.d/k3s-ca.crt"
+
+  tasks:
+    - name: Enable Kubernetes Auth Method via CLI
+      ansible.builtin.shell: |
+        export VAULT_ADDR='http://127.0.0.1:8200'
+        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
+        vault auth enable kubernetes || true
+      args:
+        executable: /bin/bash
+      register: auth_enable_out
+      changed_when: "'already enabled' not in auth_enable_out.stderr"
+
+    - name: Read K3s CA certificate from Master
+      ansible.builtin.slurp:
+        src: "{{ k3s_ca_cert_path }}"
+      register: k3s_ca_raw
+
+    - name: Write Token Reviewer JWT to Vault
+      ansible.builtin.shell: |
+        export VAULT_ADDR='http://127.0.0.1:8200'
+        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
+        vault write auth/kubernetes/config \
+            token_reviewer_jwt="{{ hostvars['k3s-master-01']['vault_reviewer_jwt'] }}" \
+            kubernetes_host="https://{{ k3s_api_host }}:6443" \
+            kubernetes_ca_cert="{{ k3s_ca_raw.content | b64decode }}"  \
+            issuer="https://kubernetes.default.svc.cluster.local" \
+            disable_iss_validation=true \
+            disable_local_ca_jwt=false
+      args:
+        executable: /bin/bash
+      # Sensitive data; avoid logging the JWT in stdout
+      no_log: true
+    
+    - name: Verify the new config
+      uri:
+        url: "http://127.0.0.1:8200/v1/auth/kubernetes/config"
+        method: GET
+        headers:
+          X-Vault-Token: "{{ cluster_vault_root_token }}"
+        status_code: 200
+        validate_certs: no
+      register: vault_config
+      no_log: true
+
+    - name: Display success
+      debug:
+        msg: "Vault Kubernetes config updated. token_reviewer_jwt_set: {{ vault_config.json.data.token_reviewer_jwt_set }}"
+
+
+ 

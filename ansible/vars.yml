@@ -1,13 +1,21 @@
 os_region_name: RegionOne
 os_auth_url: http://ncs-cloud.lan:5000/v3
-
+host_file_path: "/home/antiamoah890/Scripts/openstack-llm-infra/host.ini"
 external_network_name: "public"
 local_public_key: "/home/antiamoah890/.ssh/id_ed25519_cluster.pub"
 local_private_key: "/home/antiamoah890/.ssh/id_ed25519_cluster"
-ubuntu_minimal_uuid: "e46293b4-bdc6-419c-9150-e7d0edb767e5"
 ubuntu_image: "Ubuntu-24.04-Minimal"
 secrets_path: "/home/antiamoah890/Scripts/openstack-llm-infra/secrets"
 default_key_pair: "cluster-auth-key"
+
+public_allocation_pool_start: "172.16.20.129"
+public_allocation_pool_end: "172.16.20.254"
+public_cidr: "172.16.20.0/24"
+physical_router_gateway_ip: "172.16.20.1" 
+
+router_ipv4: "172.16.20.232"
+vpc_router_01_url: "vpc-router-01.internal.ncs-cloud.lan"
+
 
 internal_network: "10.10.0.0/16"
 mgmt_net: "mgmt_private_net"
@@ -23,50 +31,72 @@ k3s_net: "k3s_private_net"
 k3s_net_range: "10.10.30.0/24"
 
 
-
 #Management vault 
-mgmt_vault_ipv4: "10.10.10.100"
+mgmt_vault_ipv4: "10.10.10.4"
 mgmt_vault_sg: "mgmt-vault-sg"
+mgmt_vault_address: "mgmt-vault.internal.ncs-cloud.lan"
 
 #Cluster vault
-cluster_vault_ipv4: "10.10.20.100"
+cluster_vault_ipv4: "10.10.40.4"
+cluster_vault_address: "cluster-vault.internal.ncs-cloud.lan"
+cluster_vault_external_address: "vault.ncs-cloud.lan"
 
 
 # Jumbox
-BASTION_PUBLIC_IP: "172.16.20.78"
+BASTION_PUBLIC_IP: "172.16.20.120"
 bastion_insternal_ip: "10.10.10.10"
+proxy_url: "proxy.internal.ncs-cloud.lan"
+proxy_external_url: "proxy.ncs-cloud.lan"
+
 
 # kubernetes
 k3s_version: "v1.29.3+k3s1"
 pod_cidr: "10.244.0.0/16"
 service_cidr: "10.96.0.0/12"
 cilium_version: "1.15.5"
-cilium_lb_ip_range: "172.16.20.200/28"
+cilium_lb_ip_range: "10.10.30.251/30"
 
 k3s_master_bind_address: "0.0.0.0"
-k3s_mater_01_ipv4: "10.10.30.5"
+k3s_master_01_ipv4: "10.10.30.3" # Allocated first 10 ips for masters
 gpu_worker_01_ipv4: "10.10.30.10"
-inference_worker_ipv4: "10.10.30.15"
-k3s_worker_01_ipv4: "10.10.30.20"
-k3s_worker_02_ipv4: "10.10.30.21"
+k3s_worker_01_ipv4: "10.10.30.11"
+k3s_worker_02_ipv4: "10.10.30.12"
+inference_worker_ipv4: "10.10.30.13"
 k3s_subnet: "k3s_private_net"
 network_interface: "ens3"
-
-
+k3s_gateway_ipv4: "10.10.30.252"
+k3s_gateway_url: "k3s-gateway.internal.ncs-cloud.lan"
 
 
 #Gitlab
-gitlab_vm_ipv4: "10.10.20.5" 
+gitlab_vm_ipv4: "10.10.20.4"
 swap_size: "8G"
 gitlab_external_url: "gitlab.ncs-cloud.lan"
+gitlab_url: "gitlab-server.internal.ncs-cloud.lan"
+
 
 #seaweedfs
-seaweedfs_vm_ipv4: "10.10.20.10"
+seaweedfs_vm_ipv4: "10.10.20.3"
 seaweedfs_external_url: "seaweedfs.ncs-cloud.lan"
+seaweedfs_url: "seaweedfs.internal.ncs-cloud.lan"
+filer_seaweedfs_external_url: "filer.seaweedfs.ncs-cloud.lan"
+master_seaweedfs_external_url: "master.seaweedfs.ncs-cloud.lan"
+s3_seaweedfs_external_url: "s3.seaweedfs.ncs-cloud.lan"
 
 
-#Cloud-services (dns, vpn, )
-cloud_service_vm_IPv4: "10.10.40.10" 
-pihole_external_urls: "dns.ncs-cloud.lan"
-uptime_external_urls: "uptime.ncs-cloud.lan"
+#Cloud-services (dns, vpn)
+cloud_service_vm_IPv4: "10.10.40.3" 
+local_dns_IPv4: "10.10.40.3"
+pihole_external_url: "dns.ncs-cloud.lan"
+pihole_url: "dns.internal.ncs-cloud.lan"
+uptime_external_url: "uptime.ncs-cloud.lan"
+uptime_url: "uptime.internal.ncs-cloud.lan"
 
+
+#ARGOCD BOOTSTRAP
+argocd_external_url: "argocd.ncs-cloud.lan"
+argocd_url:  "argocd.internal.ncs-cloud.lan"
+
+
+vault_external_url: "vault.ncs-cloud.lan"
+vault_url: "vault.internal.ncs-cloud.lan"

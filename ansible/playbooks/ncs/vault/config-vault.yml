@@ -14,6 +14,20 @@
     vault_addr: "https://127.0.0.1:8200"
   
   tasks:
+    - name: Get image information by name
+      openstack.cloud.image_info:
+        image: "{{ ubuntu_image }}"
+      register: image_search
+
+    - name: Set the Image ID as a fact
+      set_fact:
+        target_image_id: "{{ image_search.images[0].id }}"
+      when: image_search.images | length > 0
+
+    - name: Debug the ID
+      debug:
+        msg: "The ID for target image is {{ target_image_id }}"
+      when: target_image_id is defined
 
     - name: Create Cluster vault
       community.general.terraform:
@@ -25,7 +39,7 @@
           region: "{{ os_region_name }}"         # from your vars.yml
           vm_ipv4: "{{ cluster_vault_ipv4 }}"       # matches variable name
           ssh_key_file: "{{ local_public_key }}" # matches variable name
-          image_uuid: "{{ ubuntu_minimal_uuid }}"
+          image_uuid: "{{ target_image_id }}"
       tags:
        - cluster-vault
 
@@ -41,7 +55,7 @@
           ssh_key_file: "{{ local_public_key }}" # matches variable name
           mgmt_vault_sg: "{{ mgmt_vault_sg }}" # list of strings
           mgmt_net: "{{ mgmt_net }}" 
-          image_uuid: "{{ ubuntu_minimal_uuid }}"
+          image_uuid: "{{ target_image_id }}"
       tags:
        - mgmt-vault
 
@@ -135,7 +149,7 @@
         name: ufw
         state: present
         update_cache: yes
-    
+
     - name: Configure UFW (Allow only bastion and Internal API)
       community.general.ufw:
         rule: allow
@@ -144,13 +158,15 @@
         from_ip: "{{ item.src }}"
       loop:
         - { port: '22', src: '10.10.10.0/24' }   # SSH from Mgmt Subnet
-        - { port: '8200', src: '10.0.0.0/8' }    # Vault API from Internal
+        - { port: '8200', src: '10.10.0.0/16' }    # Vault API from Internal
+        - { port: '8201', src: '10.10.0.0/16' }    # Vault API from Internal
       notify: Reload UFW
-
+    
   handlers:
     - name: Reload UFW
       community.general.ufw:
         state: reloaded
+
 
 - name: Hardened Management Vault (Transit Server) Setup
   hosts: mgmt_vault
@@ -160,11 +176,10 @@
     - "../../../vars.yml"
   vars:
     vault_addr: "https://127.0.0.1:8200"
-    local_creds_path: "{{ secrets_path }}/mgmt_key.yml"
+    local_creds_path: "{{ secrets_path }}/mgmt_vault_key.yml"
     local_creds_path_workload: "{{ secrets_path }}/cluster_recovery.yml"
     vault_password_file: "{{ secrets_path }}/.vault_pass"
     remote_key_path: "/tmp/vault_keys.json"
-    cluster_vault: "{{cluster_vault_ipv4}}"
   tags:
     - vault
     - mgmt-vault
@@ -321,15 +336,14 @@
   hosts: cluster_vault
   become: yes
   vars_files: 
-    - "../../../secrets/vault.yml" 
+    - "../../../../secrets/vault.yml" 
     - "../../../vars.yml"
   vars:
     vault_addr: "http://127.0.0.1:8200"
-    local_creds_path: "{{ secrets_path }}/mgmt_key.yml"
+    local_creds_path: "{{ secrets_path }}/mgmt_vault_key.yml"
     local_creds_path_workload: "{{ secrets_path }}/cluster_recovery.yml"
     vault_password_file: "{{ secrets_path }}/.vault_pass"
     remote_key_path: "/tmp/vault_keys.json"
-    cluster_vault: "{{cluster_vault_ipv4}}"
   tags:
     - vault
     - cluster-vault
@@ -378,7 +392,7 @@
 
           # THIS LINKS TO YOUR MGMT VAULT
           seal "transit" {
-            address            = "https://{{mgmt_vault_ipv4}}:8200" # Mgmt Vault IP
+            address            = "https://{{ mgmt_vault_address }}:8200" # Mgmt Vault IP
             disable_renewal    = "false"
             key_name           = "autounseal-key"
             mount_path         = "transit/"
@@ -386,16 +400,55 @@
             tls_skip_verify    = "true"
           }
 
-          api_addr     = "http://{{ cluster_vault_ipv4 }}:8200"
-          cluster_addr = "https://{{ cluster_vault_ipv4 }}:8201"
+          api_addr     = "http://{{ cluster_vault_address }}:8200"
+          cluster_addr = "https://{{ cluster_vault_address }}:8201"
           ui = true
 
 
-    - name: Ensure Vault is Restarted
+    - name: Ensure Vault is enabled
       ansible.builtin.systemd:
         name: vault
-        state: restarted
         enabled: yes
+    
+    - name: Read Vault config
+      ansible.builtin.slurp:
+        src: /etc/vault.d/vault.hcl
+      register: vault_config_encoded
+
+    - name: Print Vault config
+      ansible.builtin.debug:
+        msg: "{{ vault_config_encoded['content'] | b64decode }}"
+
+    - name: Configure Vault Binary and Data Directory
+      block:
+        - name: Set IPC_LOCK capability on Vault binary
+          community.general.capabilities:
+            path: /usr/bin/vault
+            capability: cap_ipc_lock+ep
+            state: present
+
+        - name: Ensure Vault data directory has correct ownership
+          ansible.builtin.file:
+            path: /opt/vault/data
+            state: directory
+            owner: vault
+            group: vault
+            recurse: yes
+
+        - name: Verify Transit Vault is reachable
+          ansible.builtin.wait_for:
+            host: 10.10.10.100
+            port: 8200
+            timeout: 5
+            msg: "The Management Vault (Transit Seal) is unreachable!"
+
+        - name: Start Vault cleanly
+          ansible.builtin.systemd:
+            name: vault
+            state: started
+            enabled: yes
+            daemon_reload: yes
+
 
     - name: Initialize Workload Vault (Auto-Unseal Mode)
       ansible.builtin.uri:
@@ -449,7 +502,15 @@
         - workload_init.status == 200
         - query('file', local_creds_path_workload) | length > 0
 
-      
+    # -------------------------------------------------------------------------
+    # 0. Enable KV-V2 Engine (CRITICAL)
+    # -------------------------------------------------------------------------
+    - name: Ensure KV-V2 engine is enabled at secret/
+      ansible.builtin.shell: |
+        export VAULT_ADDR='http://127.0.0.1:8200'
+        vault secrets enable -path=secret kv-v2
+      args:
+        executable: /bin/bash
 
   
     

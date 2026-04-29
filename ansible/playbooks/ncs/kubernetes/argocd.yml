@@ -2,15 +2,18 @@
 # Play 1: INSTALL ARGOCD
 # =============================================================================
 
-- name: "Install and Configure Gitlab Runner on K3s Cluster (Master + Workers)"
-  hosts: k3s_servers
-  become: true
+- name: "Install and Configure ArgoCD"
+  hosts: k3s_master
+  become: false
   vars_files:
-      - ../vars/hc-vault_keys.json
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml
   vars:
     gitlab_argocd_token: "{{gitlab_group_token}}"
     gitlab_argo_group_name: "{{gitlab_group_name}}"
-    gitlab_server: "172.16.0.102"
+    gateway: "cilium-gateway"
+  tags:
+    - argocd
   tasks:
     - name: Validate GitLab Deployement token
       assert:
@@ -20,15 +23,13 @@
           - gitlab_argocd_token is search('^glpat-') # Ensures it's not a raw string
         fail_msg: "Deployment token is missing or incorrectly decrypted! Ensure you used --vault-password-file."
         success_msg: "GitLab Deployment token validated successfully."
-      run_once: true
 
     - name: Add ArgoCD Helm Repository
       kubernetes.core.helm_repository:
         name: argo
         repo_url: "https://argoproj.github.io/argo-helm"
       # This ensures the repo is added to the Helm config on the master node
-      delegate_to: k3s-master-01
-      run_once: true
+
 
     - name: Deploy ArgoCD via Helm
       kubernetes.core.helm:
@@ -44,8 +45,6 @@
           configs:
             params:
               server.insecure: "true"
-      delegate_to: k3s-master-01
-      run_once: true
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
     
@@ -61,11 +60,8 @@
           type: Ready
           status: "True"
         wait_timeout: 300
-      become: true
-      delegate_to: k3s-master-01
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
-      run_once: true
 
 
     - name: Expose ArgoCD via Cilium Gateway
@@ -79,10 +75,10 @@
             namespace: argocd
           spec:
             parentRefs:
-              - name: cilium-gateway
-                namespace: cilium-secrets
+              - name: "{{ gateway }}"
+                namespace: kube-system
             hostnames:
-              - "argocd.lab.lan"
+              - "argocd.ncs-cloud.lan"
             rules:
               - matches:
                   - path:
@@ -91,148 +87,111 @@
                 backendRefs:
                   - name: argocd-server
                     port: 80
-      become: true
-      delegate_to: k3s-master-01
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
-      run_once: true
     
+
+
     
 # =============================================================================
 # Play 2: Configure initial policies for Argocd
 # =============================================================================
 
-
-- name: Configure Vault for Argocd
-  hosts: k3s_servers[0]
-  become: false
-  run_once: true
-  collections:
-    - community.hashi_vault
+- name: Configure Standalone Vault for ArgoCD
+  hosts:   cluster-vault # Run from control node or any host that can reach Vault IP
+  become: true
+  gather_facts: true
   vars_files:
-      - ../vars/hc-vault_keys.json
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml
   vars:
-    kube_config: "/etc/rancher/k3s/k3s.yaml"
-    k8s_ca_cert_cmd: >
-      kubectl get configmap kube-root-ca.crt -n kube-system
-      -o jsonpath='{.data.ca\.crt}'
-    k8s_sa_jwt_cmd: >
-      kubectl exec -n {{ vault_namespace }} vault-0 --
-      cat /var/run/secrets/kubernetes.io/serviceaccount/token
-    k8s_host_cmd: >
-      kubectl config view --raw
-      -o jsonpath='{.clusters[0].cluster.server}'
-    vault_addr: "http://vault.vault.svc.cluster.local:8200"
-    gitlab_url: "{{gitlab_url}}"
-    vault_token: "{{root_token}}"
-    vault_namespace: vault
-    environment:
-      KUBECONFIG: "{{ kube_config }}"  
-    
-  tasks:
+    # Use the IP of your dedicated mgmt-vault-transit VM
+    vault_addr: "http://{{ cluster_vault_address }}:8200"
+    vault_token: "{{ cluster_vault_root_token }}"
+  tags:
+    - argocd
 
-        
+  tasks:
     # -------------------------------------------------------------------------
-    # ArgoCD read policy
-    # vault_policy removed in community.hashi_vault 7.x — use kubectl exec
+    # 1. Create the ArgoCD Policy
     # -------------------------------------------------------------------------
-    - name: Apply ArgoCD read policy (Atomic Zero-Footprint)
+    - name: Create ArgoCD  policy via CLI
       ansible.builtin.shell: |
-        kubectl exec -i -n {{ vault_namespace }} vault-0 -- /bin/sh -c \
-        "VAULT_ADDR='{{ vault_addr }}' VAULT_TOKEN='{{ vault_token }}' vault policy write argocd-read-policy -" <<EOF
-        path "secret/data/argocd/gitlab" {
-          capabilities = ["read"]
-        }
-        path "auth/token/renew-self" {
+        export VAULT_ADDR='http://127.0.0.1:8200'
+        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
+        vault policy write argocd-policy - <<EOF
+        
+        path "auth/token/renew-self*" {
           capabilities = ["update"]
         }
-        path "auth/token/lookup-self" {
+        path "auth/token/lookup-self*" {
           capabilities = ["read"]
         }
+        # Allow full access to the ArgoCD GitLab secrets
+        path "secret/data/argocd/gitlab*" {
+          capabilities = ["create", "read", "update", "delete", "list"]
+        }
+        
+        # Essential for Ansible/UI "Preflight" checks
+        path "secret/metadata/argocd/gitlab*" {
+          capabilities = ["list", "read"]
+        }
         EOF
-      environment:
-        KUBECONFIG: "{{ kube_config }}"
-      no_log: true
-      delegate_to: k3s-master-01
+      args:
+        executable: /bin/bash
 
     # -------------------------------------------------------------------------
-    # K8s auth role — binds argocd service accounts to the policy
-    # vault_kubernetes_auth_role removed in 7.x — use kubectl exec
+    # 2. Configure Kubernetes Auth Role (FIXED)
     # -------------------------------------------------------------------------
-    - name: Configure Kubernetes auth role for ArgoCD
+    - name: Create K8s auth role for ArgoCD via CLI
       ansible.builtin.shell: |
-        kubectl exec -n {{ vault_namespace }} vault-0 -- /bin/sh -c \
-        "VAULT_ADDR='{{ vault_addr }}' VAULT_TOKEN='{{ vault_token }}' \
+        export VAULT_ADDR='http://127.0.0.1:8200'
+        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
         vault write auth/kubernetes/role/argocd-role \
-        bound_service_account_names=argocd-repo-server,argocd-server,argocd-application-controller \
-        bound_service_account_namespaces=argocd \
-        policies=argocd-read-policy \
-        ttl=1h \
-        max_ttl=24h"
-      environment:
-        KUBECONFIG: "{{ kube_config }}"
-      no_log: true
-      delegate_to: k3s-master-01
+            bound_service_account_names="argocd-repo-server,argocd-server,argocd-application-controller,external-secrets" \
+            bound_service_account_namespaces="argocd,external-secrets" \
+            policies="argocd-policy" \
+            ttl="1h" \
+            max_ttl="24h"
+      args:
+        executable: /bin/bash
 
     # -------------------------------------------------------------------------
-    # Seed GitLab group token into Vault KV
-    # vault_kv2_write still exists in 7.x — keep using the collection module
+    # 3. Seed GitLab Secrets into KV2
     # -------------------------------------------------------------------------
-    - name: Check if GitLab secret already exists
-      ansible.builtin.shell:
-        cmd: "kubectl exec -n {{ vault_namespace }} vault-0 -- /bin/sh -c 'VAULT_TOKEN={{ vault_token }} vault kv get secret/argocd/gitlab'"
-      register: vault_check
-      failed_when: false
-      changed_when: false
-      no_log: true
-
-   
-
-    - name: Write GitLab group token into Vault KV
+    - name: Write GitLab group token into Vault KV2 via CLI
       ansible.builtin.shell: |
-        kubectl exec -n {{ vault_namespace }} vault-0 -- /bin/sh -c \
-        "VAULT_TOKEN='{{ vault_token }}' vault kv put -mount=secret argocd/gitlab \
-        url='{{ gitlab_repo_url }}' \
-        username='{{ gitlab_user }}' \
-        password='{{ gitlab_group_token }}' \
-        group='{{ gitlab_group_name }}'"
+        export VAULT_ADDR='http://127.0.0.1:8200'
+        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
+        vault kv put secret/argocd/gitlab \
+            url="{{ gitlab_repo_url }}" \
+            username="{{ gitlab_user }}" \
+            password="{{ gitlab_group_token }}" \
+            group="{{ gitlab_group_name }}"
+      args:
+        executable: /bin/bash
       # no_log: true
-      delegate_to: k3s-master-01
 
-    - name: Verify secret was written to Vault KV
-      ansible.builtin.shell: |
-        kubectl exec -n {{ vault_namespace }} vault-0 -- /bin/sh -c \
-        "VAULT_ADDR='{{ vault_addr }}' VAULT_TOKEN='{{ vault_token }}' \
-        vault kv get secret/argocd/gitlab"
-      environment:
-        KUBECONFIG: "{{ kube_config }}"
-      register: kv_check
-      changed_when: false
-      failed_when: kv_check.rc != 0
-      no_log: true
-      delegate_to: k3s-master-01
-
-    - name: Confirm GitLab group token written
+    - name: Confirm configuration
       ansible.builtin.debug:
-        msg: "GitLab group token '{{ gitlab_group_name }}' seeded at secret/data/argocd/gitlab"
+        msg: "Vault CLI configuration complete: Policy, Role, and Secrets established locally."
 
 # =============================================================================
 # Play 3: Configure the root app 
 # =============================================================================
-
-- name: Configure the root application to link to gitlab cluster-ops repo
-  hosts: k3s_servers
+- name: Bootstrap ArgoCD with External Secrets
+  hosts: k3s_master
   become: false
-  run_once: true
-  collections:
-    - community.hashi_vault
-  vars:
-    kube_config: "/etc/rancher/k3s/k3s.yaml"
   vars_files:
-      - ../vars/hc-vault_keys.json
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml
+  tags:
+    - argocd 
   tasks:
-    
-    - name: Create GitLab ExternalSecret
+    # -------------------------------------------------------------------------
+    # 1. Create GitLab ExternalSecret
+    # -------------------------------------------------------------------------
+    - name: Create GitLab ExternalSecret (ArgoCD Repo Credentials)
       kubernetes.core.k8s:
         state: present
         definition:
@@ -244,7 +203,7 @@
           spec:
             refreshInterval: "1h"
             secretStoreRef:
-              name: vault-backend
+              name: vault-backend # Ensure this SecretStore points to your NEW Vault VM IP
               kind: ClusterSecretStore
             target:
               name: gitlab-repo-creds
@@ -253,7 +212,7 @@
                   labels:
                     argocd.argoproj.io/secret-type: repository
                 data:
-                  # These keys MUST match what ArgoCD expects
+                  # ArgoCD requires these specific keys for Git Auth
                   url: "{% raw %}{{ .url }}{% endraw %}"
                   username: "{% raw %}{{ .username }}{% endraw %}"
                   password: "{% raw %}{{ .password }}{% endraw %}"
@@ -271,10 +230,11 @@
                 remoteRef:
                   key: argocd/gitlab
                   property: password
-      delegate_to: k3s-master-01
 
-    
-    - name: Deploy ArgoCD Root Bootstrap Application
+    # -------------------------------------------------------------------------
+    # 2. Deploy ArgoCD Root Bootstrap Application
+    # -------------------------------------------------------------------------
+    - name: Deploy ArgoCD Root App (App-of-Apps Pattern)
       kubernetes.core.k8s:
         state: present
         definition:
@@ -283,12 +243,14 @@
           metadata:
             name: argocd-root-bootstrap
             namespace: argocd
+            finalizers:
+              - resources-finalizer.argocd.argoproj.io
           spec:
             project: default
             source:
-              repoURL: '{{gitlab_repo_url}}'
+              repoURL: "{{ gitlab_repo_url }}"
               targetRevision: HEAD
-              path: apps
+              path: apps # Ensure your cluster-ops repo has this directory
             destination:
               server: 'https://kubernetes.default.svc'
               namespace: argocd
@@ -296,4 +258,5 @@
               automated:
                 prune: true
                 selfHeal: true
-      delegate_to: k3s-master-01
+              syncOptions:
+                - CreateNamespace=true
