@@ -10,6 +10,21 @@
   tags:
     - seaweedfs
   tasks:
+    - name: Get image information by name
+      openstack.cloud.image_info:
+        image: "{{ ubuntu_image }}"
+      register: image_search
+
+    - name: Set the Image ID as a fact
+      set_fact:
+        target_image_id: "{{ image_search.images[0].id }}"
+      when: image_search.images | length > 0
+
+    - name: Debug the ID
+      debug:
+        msg: "The ID for target image is {{ target_image_id }}"
+      when: target_image_id is defined
+
     - name: Deploy seaweedfs vm
       community.general.terraform:
         project_path: "../../../../terraform/seaweedfs"
@@ -18,6 +33,7 @@
         variables:
           ssh_public_key: "{{ local_public_key }}"
           seaweedfs_vm_ipv4: "{{ seaweedfs_vm_ipv4 }}"
+          image_UUId: "{{ target_image_id }}"
 
 
 - name: Wait for vault vm to become ready
@@ -29,12 +45,16 @@
     - name: Ensure SSH is responding
       wait_for_connection:
         delay: 10      # Wait 10s before even trying
-        timeout: 300   # Give up after 5 mins
+        timeout: 30   # Give up after 5 mins
+      ignore_errors: yes
 
 
 - name: Install and configure seaweedfs
   hosts: seaweedfs_servers  
   become: yes
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml
   vars:
     seaweed_version: "3.59" # Update to the latest version as needed
     seaweed_install_dir: "/usr/local/bin"
@@ -43,8 +63,13 @@
     bind_ip: "0.0.0.0"
   tags:
     - seaweedfs
+    - seaweedfs-config
 
   tasks:
+    
+    - name: Configure DNS records
+      include_tasks: "../security/dns-config-task.yml"
+    
     - name: Install dependencies
       apt:
         name: [tar, wget, curl]

@@ -89,8 +89,12 @@
     - vault-install
   tasks:
   #===============================================================
-  # --- PHASE 1: OS HARDENING OF MANAGEMENT VAULT---
+  # --- PHASE 1: OS HARDENING OF  VAULT---
   #=============================================================== 
+    # Configure vm to use Pihole-dns
+    - name: Configure DNS records
+      include_tasks: "../security/dns-config-task.yml"
+
     - name: Disable Swap (Requirement for mlock)
       command: swapoff -a
       when: ansible_swaptotal_mb > 0
@@ -186,6 +190,7 @@
     - vault-setup
   
   tasks:
+    
     # --- PHASE 3: INITIALIZATION ---
     - name: Start Vault Service
       systemd:
@@ -286,13 +291,20 @@
 
     # --- TRANSIT CONFIGURATION ---
     - name: Enable Transit Engine
-      shell: "vault secrets enable transit"
+      ansible.builtin.shell: |
+        vault secrets enable transit
       environment:
         VAULT_ADDR: "{{ vault_addr }}"
         VAULT_TOKEN: "{{ vault_creds.root_token }}"
         VAULT_SKIP_VERIFY: "true"
-      when: vault_creds is defined
-      ignore_errors: yes
+      register: transit_enable_result
+      # 1. Ignore the error if the engine is already enabled
+      failed_when:
+        - transit_enable_result.rc != 0
+        - "'path is already in use' not in transit_enable_result.stderr"
+      # 2. Prevent the task from always showing "changed" if it was already there
+      changed_when:
+        - transit_enable_result.rc == 0
 
     - name: Create Auto-Unseal Key
       shell: "vault write -f transit/keys/autounseal-key"
@@ -321,12 +333,30 @@
         VAULT_ADDR: "{{vault_addr}}"
         VAULT_TOKEN: "{{ vault_creds.root_token }}"
         VAULT_SKIP_VERIFY: "true"
+    
 
     - name: Set Workload Token Fact
       set_fact:
         workload_vault_token: "{{ (workload_token_raw.stdout | from_json).auth.client_token }}"
   
-  
+    # -------------------------------------------------------------------------
+    # 0. Enable KV-V2 Engine (CRITICAL)
+    # -------------------------------------------------------------------------
+    - name: Ensure KV-V2 engine is enabled at secret/
+      ansible.builtin.shell: |
+        vault secrets enable -path=secret kv-v2
+      environment:
+        VAULT_ADDR: "{{ vault_addr }}"
+        VAULT_TOKEN: "{{ vault_creds.root_token }}"
+        VAULT_SKIP_VERIFY: "true"
+      register: vault_secrets_result
+      # Treat the task as successful if the path is already enabled
+      failed_when:
+        - vault_secrets_result.rc != 0
+        - "'path is already in use' not in vault_secrets_result.stderr"
+      # Optional: Mark as 'changed: false' if it was already there
+      changed_when:
+        - vault_secrets_result.rc == 0
 
 #=========================================================================
 # Configure cluster vault to use transit engine from management
@@ -351,6 +381,7 @@
     - transit-creds
 
   tasks:
+
     - name: Load Management Vault credentials
       ansible.builtin.include_vars:
         file: "{{ local_creds_path }}"
@@ -437,7 +468,7 @@
 
         - name: Verify Transit Vault is reachable
           ansible.builtin.wait_for:
-            host: 10.10.10.100
+            host: "{{ mgmt_vault_ipv4 }}"
             port: 8200
             timeout: 5
             msg: "The Management Vault (Transit Seal) is unreachable!"
@@ -462,6 +493,7 @@
       register: workload_init
       failed_when: 
         - workload_init.status != 200
+        - "'Vault is already initialized' not in workload_init.json.errors"
 
 
     - name: Stage Recovery Keys to remote temp file
@@ -502,15 +534,7 @@
         - workload_init.status == 200
         - query('file', local_creds_path_workload) | length > 0
 
-    # -------------------------------------------------------------------------
-    # 0. Enable KV-V2 Engine (CRITICAL)
-    # -------------------------------------------------------------------------
-    - name: Ensure KV-V2 engine is enabled at secret/
-      ansible.builtin.shell: |
-        export VAULT_ADDR='http://127.0.0.1:8200'
-        vault secrets enable -path=secret kv-v2
-      args:
-        executable: /bin/bash
+    
 
   
     

@@ -40,7 +40,7 @@ resource "openstack_compute_instance_v2" "cluster_vault" {
   }
 
   network {
-    name        =  "data_private_net"
+    name        =  "service_private_net"
     fixed_ip_v4 = var.vm_ipv4
   }
 

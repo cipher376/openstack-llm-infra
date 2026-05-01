@@ -43,7 +43,7 @@ cluster_vault_external_address: "vault.ncs-cloud.lan"
 
 
 # Jumbox
-BASTION_PUBLIC_IP: "172.16.20.120"
+BASTION_PUBLIC_IP: "172.16.20.176"
 bastion_insternal_ip: "10.10.10.10"
 proxy_url: "proxy.internal.ncs-cloud.lan"
 proxy_external_url: "proxy.ncs-cloud.lan"
@@ -54,7 +54,8 @@ k3s_version: "v1.29.3+k3s1"
 pod_cidr: "10.244.0.0/16"
 service_cidr: "10.96.0.0/12"
 cilium_version: "1.15.5"
-cilium_lb_ip_range: "10.10.30.251/30"
+cilium_lb_ip_range: "10.10.30.254/32"
+cilium_gateway: "10.10.30.254"
 
 k3s_master_bind_address: "0.0.0.0"
 k3s_master_01_ipv4: "10.10.30.3" # Allocated first 10 ips for masters
@@ -89,6 +90,7 @@ cloud_service_vm_IPv4: "10.10.40.3"
 local_dns_IPv4: "10.10.40.3"
 pihole_external_url: "dns.ncs-cloud.lan"
 pihole_url: "dns.internal.ncs-cloud.lan"
+dns_search: "ncs-cloud.lan internal.ncs-cloud.lan"
 uptime_external_url: "uptime.ncs-cloud.lan"
 uptime_url: "uptime.internal.ncs-cloud.lan"
 

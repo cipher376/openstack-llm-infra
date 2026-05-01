@@ -12,7 +12,7 @@
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/common/05_provision_bastion.yml
 - import_playbook: ansible/playbooks/ncs/cloud-services/services-conf.yml
-- import_playbook: ansible/playbooks/ncs/security/dns-config.yml
+
 
 #--------------------------------------------------------------------------------#
 # Deploy  vaults
@@ -32,7 +32,6 @@
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_config.yml
 - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_vault_config.yml
-# - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_bgp_config.yml
 
 #--------------------------------------------------------------------------------#
 # Install Nvidia GPU drivers
@@ -45,7 +44,7 @@
 # Configure Security
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/security/proxy-config.yml
-
+# - import_playbook: ansible/playbooks/ncs/security/dns-config.yml
 
 #--------------------------------------------------------------------------------#
 # Deploy ARGOCD

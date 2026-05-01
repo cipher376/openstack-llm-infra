@@ -65,15 +65,20 @@
 
     - name: Ensure SSH is responding
       wait_for:
-        host: "{{ cloud_service_vm_IPv4 }}"
+        host: cloud-services
         port: 22
-        timeout: 300
+        timeout: 60
+      ignore_errors: true
+      delegate_to: localhost
+      remote_user: ubuntu
+      vars:
+        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 
 
 - name: Deploy Cloud Services Stack
   hosts: cloud_services
-  gather_facts: true  # Must be false because python/SSH isn't ready yet
+  gather_facts: true  
   become: true
   vars:
     project_path: "/opt/cloud-services"
@@ -84,7 +89,7 @@
     - ../../../vars.yml  
   tags:
     - services
-    - sevices-config
+    - services-config
   tasks:
     
     - name: Update apt cache
@@ -109,36 +114,102 @@
       retries: 3
       delay: 5
 
-    - name: Disable systemd-resolved to free Port 53
-      service:
-        name: systemd-resolved
-        state: stopped
-        enabled: no
+    - name: Get VM details
+      openstack.cloud.server_info:
+        server: "bastion-server"
+      register: vm_details
+      delegate_to: localhost
+      become: no
 
-    - name: Remove immutable flag if it exists (unlock file)
-      command: chattr -i /etc/resolv.conf
-      ignore_errors: yes
-      changed_when: false
+    - name: Extract Floating IP
+      set_fact:
+        external_ip: "{{ (vm_details.servers[0].addresses.values() | flatten | selectattr('OS-EXT-IPS:type', 'equalto', 'floating') | map(attribute='addr') | list) | first }}"
+        cacheable: yes
+      delegate_to: localhost
+      become: no
+      
+    - name: Verify Floating IP was captured
+      assert:
+        that:
+          - external_ip is not none
+        fail_msg: "Floating IP not found!."
+      delegate_to: localhost
+      become: no
 
-    - name: Set static DNS for the host itself
-      copy:
-        dest: /etc/resolv.conf
-        content: |
-          nameserver 127.0.0.1
-          nameserver 172.16.20.1
-          nameserver 1.1.1.1
-          search ncs-cloud.lan internal.ncs-cloud.lan
-    
-    - name: Re-apply immutable flag (prevent DHCP/System overwrite)
-      command: chattr +i /etc/resolv.conf
-      ignore_errors: yes
+      
+    - name: Display the External IP
+      debug:
+        msg: "The external (Floating) IP for the VM is: {{ external_ip | default('None Assigned') }}"
+      delegate_to: localhost
+      become: no
 
-    - name: Create project directory
+
+    - name: Ensure parent directory for Pi-hole custom.list exists
       file:
-        path: "{{ project_path }}"
+        path: "{{ project_path }}/pihole"
         state: directory
         mode: '0755'
 
+    - name: Inject Local DNS records into Pi-hole
+      ansible.builtin.blockinfile:
+        path: "{{ project_path }}/pihole/custom.list" # Update this to your host path for Pi-hole config
+        create: yes
+        marker: "# {mark} ANSIBLE MANAGED LAN RECORDS"
+        block: |
+          {{ external_ip }} argocd.ncs-cloud.lan
+          {{ external_ip }} bastion-server.ncs-cloud.lan
+          {{ external_ip }} dns.ncs-cloud.lan
+          {{ external_ip }} wireguard.ncs-cloud.lan
+          {{ external_ip }} fproxy.ncs-cloud.lan
+          {{ external_ip }} vault.ncs-cloud.lan
+          {{ external_ip }} gitlab.ncs-cloud.lan
+          {{ external_ip }} grafana.ncs-cloud.lan
+          {{ external_ip }} hubble.ncs-cloud.lan
+          {{ external_ip }} master.seaweedfs.ncs-cloud.lan
+          {{ external_ip }} prometheus.ncs-cloud.lan
+          {{ external_ip }} s3.seaweedfs.ncs-cloud.lan
+          {{ external_ip }} uptime.ncs-cloud.lan
+
+          
+          {{ cilium_gateway }}  argocd.internal.ncs-cloud.lan
+          10.10.10.10  bastion-server.internal.ncs-cloud.lan
+          10.10.40.3   cloud-services.internal.ncs-cloud.lan
+          10.10.40.3   dns.internal.ncs-cloud.lan
+          10.10.40.3   wireguard.internal.ncs-cloud.lan
+          10.10.10.10  fproxy.internal.ncs-cloud.lan
+          10.10.40.4   vault.internal.ncs-cloud.lan
+          10.10.20.3   filer.seaweedfs.internal.ncs-cloud.lan
+          10.10.20.4   gitlab-server.internal.ncs-cloud.lan
+          10.10.30.10  gpu-worker-01.internal.ncs-cloud.lan
+          {{ cilium_gateway }}  grafana.internal.ncs-cloud.lan
+          {{ cilium_gateway }}  hubble.internal.ncs-cloud.lan
+          10.10.30.13  inference-worker-01.internal.ncs-cloud.lan
+          10.10.30.3   k3s-master-01.internal.ncs-cloud.lan
+          10.10.30.11  k3s-worker-01.internal.ncs-cloud.lan
+          10.10.30.12  k3s-worker-02.internal.ncs-cloud.lan
+          10.10.20.3   master.seaweedfs.internal.ncs-cloud.lan
+          10.10.10.4   mgmt-vault.internal.ncs-cloud.lan
+          {{ cilium_gateway }}  prometheus.internal.ncs-cloud.lan
+          10.10.20.3   s3.seaweedfs.internal.ncs-cloud.lan
+          10.10.20.3   seaweedfs.internal.ncs-cloud.lan
+          10.10.40.3   uptime.internal.ncs-cloud.lan
+      register: pihole_dns
+    - name: Ensure dnsmasq configuration directory exists for Pi-hole
+      file:
+        path: "{{ project_path }}/pihole/dnsmasq.d"
+        state: directory
+        mode: '0755'
+
+    - name: Add allow-queries directive to permit DNS from 10.0.0.0/8
+      copy:
+        dest: "{{ project_path }}/pihole/dnsmasq.d/99-allow-local.conf"
+        content: |
+          # Allow DNS queries from the 10.0.0.0/8 network
+          allow-queries=10.0.0.0/8
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart pihole
 
     - name: Create Unbound configuration directory
       file:
@@ -154,7 +225,7 @@
 
     - name: Configure Unbound for Pi-hole recursion
       ansible.builtin.copy:
-        dest: "{{ unbound_conf_dir }}/unboud-pi-hole.conf"
+        dest: "{{ unbound_conf_dir }}/unbound-pi-hole.conf"
         content: |
           server:
             # Listen on all interfaces inside the container
@@ -210,9 +281,19 @@
                 - "80:80/tcp"
               environment:
                 TZ: 'America/Edmonton'
-                # PIHOLE_DNS_ is the environment variable to set upstream DNS on boot
+                # Use Unbound via Docker bridge networking
                 PIHOLE_DNS_: 'unbound#5335' 
                 FTLCONF_webserver_api_password: '{{ pihole_admin_pass }}'
+                FTLCONF_dns_hosts: '/etc/pihole/hosts/custom.list'
+                FTLCONF_dns_listeningMode: 'ALL'
+                # Required for cross-subnet/VPC resolution
+                DNSMASQ_LISTENING: 'all'
+                DNSMASQ_ALLOW_NON_LOCAL: 'true'
+                INTERFACE: ens3
+              volumes:
+                - '{{ project_path }}/pihole/custom.list:/etc/pihole/hosts/custom.list'
+                - '{{ project_path }}/pihole/dnsmasq.d/99-allow-local.conf:/etc/dnsmasq.d/99-allow-local.conf' 
+                - pihole_config:/etc/pihole
               restart: always
 
             unbound:
@@ -226,7 +307,7 @@
                 - "5335:5335/udp"
               volumes:
                 # Quote the volume paths to prevent YAML parsing errors with variables
-                - "{{ unbound_conf_dir }}/unboud-pi-hole.conf:/opt/unbound/etc/unbound/unbound.conf"
+                - "{{ unbound_conf_dir }}/unbound-pi-hole.conf:/opt/unbound/etc/unbound/unbound.conf"
                 - "{{ unbound_conf_dir }}/root.hints:/opt/unbound/etc/unbound/root.hints"
               healthcheck:
                 # Using localhost check is safer if external DNS is flaky during boot
@@ -241,8 +322,7 @@
               ports:
                 - "3001:3001/tcp"
               # Point Kuma directly to the Pi-hole container for resolution
-              dns:
-                - 127.0.0.1 
+              dns: 127.0.0.1
               volumes:
                 - uptime-kuma:/app/data
               restart: always
@@ -267,18 +347,62 @@
 
           volumes:
             uptime-kuma:
+            pihole_config:
 
+    - name: Disable systemd-resolved to free Port 53
+      service:
+        name: systemd-resolved
+        state: stopped
+        enabled: no
+
+    - name: Remove immutable flag if it exists (unlock file)
+      command: chattr -i /etc/resolv.conf
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Set static DNS for the host itself
+      copy:
+        dest: /etc/resolv.conf
+        content: |
+          nameserver 127.0.0.1
+          nameserver 172.16.20.1
+          nameserver 1.0.0.1
+          nameserver 1.1.1.1
+          search ncs-cloud.lan internal.ncs-cloud.lan
+    
+    - name: Re-apply immutable flag (prevent DHCP/System overwrite)
+      command: chattr +i /etc/resolv.conf
+      ignore_errors: yes
+
+    - name: Create project directory
+      file:
+        path: "{{ project_path }}"
+        state: directory
+        mode: '0755'
+
+    - name: Add hostname mapping
+      lineinfile:
+        path: /etc/hosts
+        line: "127.0.0.1 {{ inventory_hostname }}"
+        insertafter: '^127\.0\.0\.1\s+localhost'
+        
     - name: Start the Services
-      shell: "docker compose -f {{ project_path }}/docker-compose.yml up -d"
+      ansible.builtin.shell: "docker compose -f {{ project_path }}/docker-compose.yml up -d --force-recreate"
+      async: 600          # Allow up to 10 minutes (prevents the 30s timeout)
+      poll: 10            # Check status every 10 seconds
+      register: docker_up
+      until: docker_up.rc == 0
+      retries: 5          # Retry if the command itself fails
       delay: 10
-      timeout: 30
-      retries: 3
 
-    - name: Restart Unbound container if config changed
-      community.docker.docker_container:
-        name: unbound
-        image: mvance/unbound:latest
-        state: started
-        restart: yes
-      when: unbound_config.changed
+    
+  handlers:
+    - name: restart pihole
+      ansible.builtin.command:
+        cmd: "docker compose -f {{ project_path }}/docker-compose.yml restart pihole"
+      listen: "restart pihole"
+
+    
+    
+
   

@@ -10,6 +10,21 @@
   tags:
     - gitlab
   tasks:
+    - name: Get image information by name
+      openstack.cloud.image_info:
+        image: "{{ ubuntu_image }}"
+      register: image_search
+
+    - name: Set the Image ID as a fact
+      set_fact:
+        target_image_id: "{{ image_search.images[0].id }}"
+      when: image_search.images | length > 0
+
+    - name: Debug the ID
+      debug:
+        msg: "The ID for target image is {{ target_image_id }}"
+      when: target_image_id is defined
+
     - name: Deploy gitlab vm
       community.general.terraform:
         project_path: "../../../../terraform/gitlab"
@@ -19,6 +34,7 @@
           ssh_public_key: "{{ local_public_key }}"
           gitlab_vm_ipv4: "{{ gitlab_vm_ipv4 }}"
           key_pair: "{{ default_key_pair }}"
+          image_UUId: "{{ target_image_id }}"
     
     # - name: Wait for cloud-init to finish
     #   ansible.builtin.shell: cloud-init status --wait
@@ -54,6 +70,9 @@
     gitlab_version: "gitlab-ce"
 
   tasks:
+
+    - name: Configure DNS records
+      include_tasks: "../security/dns-config-task.yml"
     
 # ------------------------------------------------------------------ #
 #  SECTION 1 — SYSTEM PREPARATION                                    #

@@ -8,6 +8,7 @@
     - ../../../../secrets/vault.yml   
     - ../../../vars.yml
   tags:
+    - k3s
     - k3s-vault
 
   vars:
@@ -22,6 +23,13 @@
     operator_sa: external-secrets
 
   tasks:
+    - name: Create a new Namespace
+      kubernetes.core.k8s:
+        name: "{{ target_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
     - name: Add External Secrets Helm repo
       kubernetes.core.helm_repository:
         name: external-secrets
@@ -137,6 +145,7 @@
 - name: Create Vault Reviewer ServiceAccount and Token
   hosts: k3s_master
   tags:
+    - k3s
     - k3s-vault
     
   tasks:
@@ -211,6 +220,7 @@
     - ../../../../secrets/vault.yml
     - ../../../vars.yml
   tags:
+    - k3s
     - k3s-vault
     
   tasks:
@@ -226,7 +236,7 @@
         owner: vault
         group: vault
         mode: '0644'
-      delegate_to: "cluster_vault"
+      delegate_to: "cluster-vault"
 
 
 # =============================================================================
@@ -236,10 +246,11 @@
   hosts: cluster-vault # Your dedicated Vault VM
   become: true
   tags:
+    - k3s
     - k3s-vault
     
   vars_files:
-    - ../../../../secrets/vault.yml
+    - ../../../../secrets/cluster_recovery.yml
     - ../../../vars.yml
   vars:
     # 1. The Internal IP of your K3s Master
@@ -252,7 +263,7 @@
     - name: Enable Kubernetes Auth Method via CLI
       ansible.builtin.shell: |
         export VAULT_ADDR='http://127.0.0.1:8200'
-        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
+        export VAULT_TOKEN='{{ root_token }}'
         vault auth enable kubernetes || true
       args:
         executable: /bin/bash
@@ -267,7 +278,7 @@
     - name: Write Token Reviewer JWT to Vault
       ansible.builtin.shell: |
         export VAULT_ADDR='http://127.0.0.1:8200'
-        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
+        export VAULT_TOKEN='{{ root_token }}'
         vault write auth/kubernetes/config \
             token_reviewer_jwt="{{ hostvars['k3s-master-01']['vault_reviewer_jwt'] }}" \
             kubernetes_host="https://{{ k3s_api_host }}:6443" \
@@ -278,14 +289,14 @@
       args:
         executable: /bin/bash
       # Sensitive data; avoid logging the JWT in stdout
-      no_log: true
+      # no_log: true
     
     - name: Verify the new config
       uri:
         url: "http://127.0.0.1:8200/v1/auth/kubernetes/config"
         method: GET
         headers:
-          X-Vault-Token: "{{ cluster_vault_root_token }}"
+          X-Vault-Token: "{{ root_token }}"
         status_code: 200
         validate_certs: no
       register: vault_config

@@ -2,7 +2,9 @@
   hosts: k3s_servers
   become: true
   tags:
+    - k3s
     - nvidia
+    
   vars:
     nvidia_driver: "nvidia-driver-570-server"
     nvidia_persistenced: true
@@ -29,9 +31,9 @@
 # ------------------------------------------------------------------ #
 
     - name: Verify GPU is visible to VM
-      shell: lspci | grep -i nvidia
+      ansible.builtin.shell: lspci | grep -i nvidia
       register: gpu_check
-      # changed_when: false
+      failed_when: false
       changed_when: gpu_check.rc == 0
 
     - name: Display detected GPU
@@ -48,6 +50,7 @@
       loop:
         - nvidia-container-toolkit.list
         - libnvidia-container.list
+      when: gpu_check.rc == 0
 
     - name: Add NVIDIA GPG Key
       get_url:
@@ -55,6 +58,8 @@
         dest: /usr/share/keyrings/nvidia-container-toolkit-keyring.asc
         mode: '0644'
         force: yes
+      when: gpu_check.rc == 0
+      
     
     - name: Configure NVIDIA Repository with GPG Key
       apt_repository:
@@ -62,6 +67,8 @@
         state: present
         filename: nvidia-container-toolkit
         update_cache: yes
+      when: gpu_check.rc == 0
+      
 
     - name: Install prerequisites
       apt:
@@ -75,11 +82,15 @@
         update_cache: yes
       register: prereq_install
       failed_when: false
+      when: gpu_check.rc == 0
+
 
     - name: Trigger DKMS autoinstall to rebuild modules
       command: dkms autoinstall -k {{ ansible_kernel }}
       register: dkms_result
       changed_when: "'Installing' in dkms_result.stdout"
+      when: gpu_check.rc == 0
+
 
     - name: Fail if prerequisites could not be installed
       fail:
@@ -87,6 +98,8 @@
       when:
         - prereq_install.failed is defined
         - prereq_install.failed
+        - gpu_check.rc == 0
+
 
     - name: Enable restricted and multiverse repositories
       apt_repository:
@@ -97,11 +110,14 @@
         - "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }}-updates restricted"
         - "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} multiverse"
         - "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }}-updates multiverse"
+      when: gpu_check.rc == 0
 
     - name: Update apt cache after adding repos
       apt:
         update_cache: yes
         cache_valid_time: 0
+      when: gpu_check.rc == 0
+      
 
 # ------------------------------------------------------------------ #
 #  SECTION 3 — REMOVE CONFLICTING DRIVERS                              #
@@ -116,6 +132,8 @@
         state: absent
         purge: yes
       failed_when: false
+      when: gpu_check.rc == 0
+
 
     - name: Blacklist nouveau inside the VM
       copy:
@@ -124,16 +142,21 @@
         content: |
           blacklist nouveau
           options nouveau modeset=0
+      when: gpu_check.rc == 0
+      
 
     - name: Update initramfs after blacklisting nouveau
       command: update-initramfs -u -k all
       register: initramfs_update
       failed_when: false
+      when: gpu_check.rc == 0
+
 
     - name: Display initramfs update result
       debug:
         msg: "{{ initramfs_update.stdout_lines | default(['no output']) }}"
-
+      when: gpu_check.rc == 0
+      
 # ------------------------------------------------------------------ #
 #  SECTION 4 — INSTALL NVIDIA DRIVER                                   #
 # ------------------------------------------------------------------ #
@@ -147,12 +170,16 @@
         state: present
       register: driver_install
       failed_when: false
+      when: gpu_check.rc == 0
+
 
     - name: Display driver install result
       debug:
         msg:
           - "changed: {{ driver_install.changed }}"
           - "failed:  {{ driver_install.failed | default(false) }}"
+      when: gpu_check.rc == 0
+      
 
     - name: Warn if driver install failed
       debug:
@@ -162,6 +189,8 @@
       when:
         - driver_install.failed is defined
         - driver_install.failed
+        - gpu_check.rc == 0
+      
 
     - name: Add NVIDIA Container Toolkit Repository (Dynamic)
       ansible.builtin.shell: |
@@ -170,10 +199,14 @@
         tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
       args:
         creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      when: gpu_check.rc == 0
+      
 
     - name: Update apt cache manually
       ansible.builtin.apt:
         update_cache: yes
+      when: gpu_check.rc == 0
+      
 
     - name: Install NVIDIA Container Toolkit
       ansible.builtin.apt:
@@ -186,42 +219,46 @@
       when:
         - driver_install.failed is defined
         - not driver_install.failed
+        - gpu_check.rc == 0
       become: true
 
     - name: Display container toolkit install result
       debug:
         msg: "{{ container_toolkit_install.stdout_lines | default(['no output']) }}"
-        
+      when: gpu_check.rc == 0
+      
 # ------------------------------------------------------------------ #
 #  SECTION 5 — SAFE REBOOT                                           #
 # ------------------------------------------------------------------ #
 
     - name: Flush handlers before reboot
       meta: flush_handlers
+      when: gpu_check.rc == 0
+    
 
-    - name: Reboot VM to load NVIDIA drivers
-      reboot:
-        msg: "Rebooting to load NVIDIA drivers"
-        reboot_timeout: 120
-        post_reboot_delay: 300
-        connect_timeout: 600
-        test_command: whoami
-      register: reboot_result
-      failed_when: false
+    - name: Reboot the VM
+      ansible.builtin.reboot:
+        reboot_timeout: 300  # Wait up to 5 minutes for the VM to return
+        msg: "Rebooting for GPU/Kernel updates"
+      when: gpu_check.rc == 0
+
 
     - name: Display reboot result
       debug:
         msg: "Reboot completed: {{ reboot_result.rebooted | default(false) }}"
-
+      when: gpu_check.rc == 0
+      
     - name: Wait for VM to come back online
       wait_for_connection:
         delay: 15
         timeout: 300
         sleep: 10
         connect_timeout: 30
-
+      when: gpu_check.rc == 0
+      
     - name: Verify VM is back online
       ping:
+      when: gpu_check.rc == 0
 
 # ------------------------------------------------------------------ #
 #  SECTION 6 — POST REBOOT VERIFICATION                                #
@@ -234,33 +271,41 @@
       failed_when: false
       retries: 3
       delay: 10
+      when: gpu_check.rc == 0
+
 
     - name: Display DKMS status
       debug:
         msg: "{{ dkms_check.stdout_lines | default(['no dkms output']) }}"
-
+      when: gpu_check.rc == 0
+      
     - name: Warn if DKMS modules not found
       debug:
         msg: >
           WARNING: NVIDIA DKMS modules not found.
           Driver may not have installed correctly.
-      when: dkms_check.rc != 0
+      when: gpu_check.rc == 0 and dkms_check.rc != 0 
 
     - name: Check if nvidia module is loaded
       shell: lsmod | grep nvidia
       register: nvidia_module
       changed_when: false
       failed_when: false
+      when: gpu_check.rc == 0
+
 
     - name: Display loaded nvidia modules
       debug:
         msg: "{{ nvidia_module.stdout_lines | default(['no nvidia modules loaded']) }}"
+      when: gpu_check.rc == 0
 
     - name: Attempt to load nvidia module if not loaded
       command: modprobe nvidia
       register: modprobe_result
       failed_when: false
-      when: nvidia_module.rc != 0
+      when: 
+        - gpu_check.rc == 0
+        - nvidia_module.rc != 0  
 
     - name: Verify nvidia-smi works after reboot
       command: nvidia-smi
@@ -269,10 +314,12 @@
       failed_when: false
       retries: 3
       delay: 10
+      when: gpu_check.rc == 0
 
     - name: Display nvidia-smi output
       debug:
         msg: "{{ smi_output.stdout_lines | default(['nvidia-smi failed']) }}"
+      when: gpu_check.rc == 0
 
     - name: Fail if nvidia-smi not working after reboot
       fail:
@@ -280,7 +327,7 @@
           nvidia-smi failed after reboot and driver install.
           Check dmesg on the VM for errors:
           ssh ubuntu@{{ inventory_hostname }} 'dmesg | grep -i nvidia'
-      when: smi_output.rc != 0
+      when: gpu_check.rc == 0 and smi_output.rc != 0 
 
 # ------------------------------------------------------------------ #
 #  SECTION 7 — PERSISTENCE MODE                                        #
@@ -293,33 +340,38 @@
         state: started
       register: persistenced_result
       failed_when: false
-      when: nvidia_persistenced
+      when: gpu_check.rc == 0 and nvidia_persistenced 
 
     - name: Display nvidia-persistenced status
       command: systemctl status nvidia-persistenced
       register: persistenced_status
       changed_when: false
       failed_when: false
+      when: gpu_check.rc == 0
 
     - name: Show persistenced status
       debug:
         msg: "{{ persistenced_status.stdout_lines | default(['persistenced not running']) }}"
+      when: gpu_check.rc == 0
 
     - name: Set persistence mode via nvidia-smi as fallback
       command: nvidia-smi -pm 1
       register: persistence_mode
       failed_when: false
       changed_when: persistence_mode.rc == 0
+      when: gpu_check.rc == 0
 
     - name: Display persistence mode result
       debug:
         msg: "{{ persistence_mode.stdout | default('persistence mode not set') }}"
+      when: gpu_check.rc == 0
 
     - name: Check CUDA version
       command: nvcc --version
       register: cuda_version
       changed_when: false
       failed_when: false
+      when: gpu_check.rc == 0
 
     
 
@@ -336,8 +388,5 @@
           - "nvidia-smi:         {{ 'ok' if smi_output.rc == 0 else 'FAILED' }}"
           - "Persistenced:       {{ 'running' if persistenced_result.failed == false else 'not running' }}"
           - "CUDA version:       {{ cuda_version.stdout_lines[0] | default('unknown') }}"
+      when: gpu_check.rc == 0
 
-  handlers:
-    - name: reboot_vm
-      debug:
-        msg: "Reboot handled by explicit reboot task in section 5"

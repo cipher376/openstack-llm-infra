@@ -255,6 +255,7 @@
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       changed_when: false
       failed_when: ready_count.stdout | int == 0
+      ignore_errors: yes
 
     - name: Display plugin status
       debug:

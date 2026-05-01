@@ -25,5 +25,4 @@ variable "seaweedfs_vm_ipv4" {
 
 variable "image_UUId" {
   type = string
-  default = "e46293b4-bdc6-419c-9150-e7d0edb767e5"
 }

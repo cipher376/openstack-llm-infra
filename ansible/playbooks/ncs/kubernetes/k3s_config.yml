@@ -36,7 +36,7 @@
           region: "{{ os_region_name }}"
           ssh_key_file: "{{ local_public_key }}"
           image_uuid: "{{ target_image_id }}"
-          k3s_master_01_vm_ipv4: "{{ k3s_mater_01_ipv4 }}"
+          k3s_master_01_vm_ipv4: "{{ k3s_master_01_ipv4 }}"
           k3s_worker_01_vm_ipv4: "{{ k3s_worker_01_ipv4 }}"
           k3s_worker_02_vm_ipv4: "{{ k3s_worker_02_ipv4 }}"
           gpu_worker_01_vm_ipv4: "{{ gpu_worker_01_ipv4 }}"
@@ -58,6 +58,8 @@
       command: cloud-init status --wait
       changed_when: false
       failed_when: false
+
+    
 
 
 - name: "Install and Configure K3s Cluster (Master + Workers)"
@@ -103,6 +105,9 @@
       command: cloud-init status --wait
       changed_when: false
       failed_when: false
+
+    - name: Configure DNS records
+      include_tasks: "../security/dns-config-task.yml"
 
     - name: Wait for unattended-upgrades to finish
       shell: |
