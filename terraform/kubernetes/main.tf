@@ -110,67 +110,39 @@ resource "openstack_compute_volume_attach_v2" "va_1" {
   volume_id   = openstack_blockstorage_volume_v3.gpu_worker_storage.id
 }
 
-#==========================================================================
-# Inference WORKER 
-#==========================================================================
-
-resource "openstack_compute_instance_v2" "inference_worker" {
-  name            = "inference-worker-01"
-  image_id        = var.image_uuid
-  flavor_name     = "ai.inference.boot"
-  security_groups = ["internal-sg", "k3s-internal-sg"]
-  config_drive    = true
-
-  network {
-    name        = var.k3s_subnet
-    fixed_ip_v4 = var.inference_worker_01_vm_ipv4
-  }
-
-  # Cloud-Init for Driver Installation
-  user_data = <<-EOF
-    #cloud-config
-    users:
-      - name: ubuntu
-        groups: sudo
-        shell: /bin/bash
-        sudo: ['ALL=(ALL) NOPASSWD:ALL']
-        ssh_authorized_keys:
-          - ${file(var.ssh_key_file)}
-    runcmd:
-      - apt-get update
-      - apt-get install -y ubuntu-drivers-common
-      - ubuntu-drivers autoinstall
-  EOF
-}
 
 #==========================================================================
 # REGULAR WORKERS 
 #==========================================================================
 
-
-resource "openstack_compute_instance_v2" "k3s_worker_01" {
-  name            = "k3s-worker-01"
-  flavor_name     = "m1.large"
-  security_groups = ["internal-sg","k3s-internal-sg"]
+resource "openstack_compute_instance_v2" "k3s_worker" {
+  # Create 3 instances
+  count           = var.k3s_worker_count
+  
+  # Dynamically names them: k3s-worker-01, k3s-worker-02, k3s-worker-03
+  name            = "k3s-worker-${format("%02d", count.index + 1)}"
+  
+  flavor_name     = "m1.heavy"
+  security_groups = ["internal-sg", "k3s-internal-sg"]
   config_drive    = true
 
-
   network {
-    name        = var.k3s_subnet
-    fixed_ip_v4 = var.k3s_worker_01_vm_ipv4
-
+    name = var.k3s_subnet
+    # Pulls the corresponding IP from your list variable based on the count index
+    # fixed_ip_v4 = var.k3s_worker_ips[count.index]
   }
-  
+
   block_device {
-    uuid        = var.image_uuid
+    uuid                  = var.image_uuid
     source_type           = "image"
-    volume_size           = 40
+    volume_size           = 100
     destination_type      = "volume"
     volume_type           = "ncs-nvme"
-    delete_on_termination = true
-    boot_index            = 0           
+    delete_on_termination = false
+    boot_index            = 0
   }
-  # Cloud-Init for Driver Installation
+
+  # Cloud-Init remains the same for all workers
   user_data = <<-EOF
     #cloud-config
     users:
@@ -185,46 +157,9 @@ resource "openstack_compute_instance_v2" "k3s_worker_01" {
       - apt-get install -y ubuntu-drivers-common
       - ubuntu-drivers autoinstall
   EOF
-
 }
 
-resource "openstack_compute_instance_v2" "k3s_worker_02" {
-  name            = "k3s-worker-02"
-  flavor_name     = "m1.large"
-  security_groups = ["internal-sg","k3s-internal-sg"]
-  config_drive    = true
-
-
-  network {
-    name        = var.k3s_subnet
-    fixed_ip_v4 = var.k3s_worker_02_vm_ipv4
-
-  }
-  
-  block_device {
-    uuid        = var.image_uuid
-    source_type           = "image"
-    volume_size           = 40
-    destination_type      = "volume"
-    volume_type           = "ncs-nvme"
-    delete_on_termination = true
-    boot_index            = 0           
-  }
-  # Cloud-Init for Driver Installation
-  user_data = <<-EOF
-    #cloud-config
-    users:
-      - name: ubuntu
-        groups: sudo
-        shell: /bin/bash
-        sudo: ['ALL=(ALL) NOPASSWD:ALL']
-        ssh_authorized_keys:
-          - ${file(var.ssh_key_file)}
-    runcmd:
-      - apt-get update
-      - apt-get install -y ubuntu-drivers-common
-      - ubuntu-drivers autoinstall
-  EOF
-
+output "worker_ips" {
+  value = openstack_compute_instance_v2.k3s_worker[*].network[0].fixed_ip_v4
 }
 

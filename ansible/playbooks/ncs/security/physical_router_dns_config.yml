@@ -1,0 +1,87 @@
+
+
+- name: Configure OpenWrt DNS Records
+  hosts: openwrt_router
+  become: false
+  vars_files:
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml
+  gather_facts: false
+  tags:
+    - router-config
+  
+  tasks:
+    - name: Get VM details
+      openstack.cloud.server_info:
+        server: "bastion-server"
+      register: vm_details
+      delegate_to: localhost
+
+    - name: Extract Floating IP
+      set_fact:
+        external_ip: "{{ (vm_details.servers[0].addresses.values() | flatten | selectattr('OS-EXT-IPS:type', 'equalto', 'floating') | map(attribute='addr') | list) | first }}"
+        cacheable: yes
+      delegate_to: localhost
+      
+      
+    - name: Verify Floating IP was captured
+      assert:
+        that:
+          - external_ip is not none
+        fail_msg: "Floating IP not found!."
+      delegate_to: localhost
+      
+
+    - name: Install python3 via apk
+      ansible.builtin.raw: apk update && apk add python3
+      changed_when: true
+
+    - name: Install sftp server (optional but recommended for 'copy' module)
+      ansible.builtin.raw: apk add openssh-sftp-server
+      changed_when: true
+
+    - name: Create a backup of the DHCP config
+      ansible.builtin.shell: |
+        cp /etc/config/dhcp.bk /etc/config/dhcp
+      
+
+    - name: Commit changes and restart DNS
+      ansible.builtin.shell: |
+        uci commit dhcp
+        /etc/init.d/dnsmasq restart
+      
+
+
+    - name: Add DNS records via UCI
+      ansible.builtin.shell: |
+        # Check if the record already exists to avoid duplicates
+        if ! uci show dhcp | grep -q "name='{{ item.name }}'"; then
+          ID=$(uci add dhcp domain)
+          uci set dhcp.$ID.name='{{ item.name }}'
+          uci set dhcp.$ID.ip='{{ item.ip }}'
+          echo "changed"
+        fi
+      vars:    
+        dns_records:
+          - { name: 'ncs-cloud.lan', ip: "{{ openstack_vip }}" }
+          - { name: 'gitlab.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'filer.seaweedfs.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'dns.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 's3.seaweedfs.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'master.seaweedfs.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'uptime.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'argocd.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'vault.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'grafana.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'prometheus.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'hubble.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: 'wireguard.ncs-cloud.lan', ip: "{{ external_ip }}" }
+      loop: "{{ dns_records }}"
+      register: uci_updates
+      changed_when: "'changed' in uci_updates.stdout"
+
+    - name: Commit changes and restart DNS
+      ansible.builtin.shell: |
+        uci commit dhcp
+        /etc/init.d/dnsmasq restart
+      when: uci_updates.changed

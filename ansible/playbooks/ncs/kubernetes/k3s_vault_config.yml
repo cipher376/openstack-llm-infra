@@ -16,8 +16,7 @@
     vault_port: "8200"
     # The mount path for k8s auth in Vault (usually 'kubernetes')
     vault_auth_path: "kubernetes"
-    # The role name we created in the previous Ansible step
-    vault_role: "argocd-role"
+    vault_role: "cluster-ops-role"
     target_namespace: argocd
     operator_namespace: external-secrets
     operator_sa: external-secrets
@@ -111,7 +110,7 @@
           - "Role created: {{ role_status.resources | length > 0 }}"
           - "RoleBinding created: {{ binding_status.resources | length > 0 }}"
     
-    - name: Deploy ClusterSecretStore for Standalone Vault
+    - name: Deploy ClusterSecretStore 
       kubernetes.core.k8s:
         state: present
         definition:
@@ -133,8 +132,6 @@
                     role: "{{ vault_role }}"
                     audience: "https://kubernetes.default.svc.cluster.local"
                     serviceAccountRef:
-                      # name: argocd-repo-server
-                      # namespace: argocd
                       name: external-secrets
                       namespace: external-secrets
 

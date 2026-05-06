@@ -78,7 +78,7 @@
               - name: "{{ gateway }}"
                 namespace: kube-system
             hostnames:
-              - "argocd.ncs-cloud.lan"
+              - "argocd.internal.ncs-cloud.lan"
             rules:
               - matches:
                   - path:
@@ -90,91 +90,6 @@
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
     
-
-
-    
-# =============================================================================
-# Play 2: Configure initial policies for Argocd
-# =============================================================================
-
-- name: Configure Standalone Vault for ArgoCD
-  hosts:   cluster-vault # Run from control node or any host that can reach Vault IP
-  become: true
-  gather_facts: true
-  vars_files:
-    - ../../../../secrets/vault.yml   
-    - ../../../vars.yml
-  vars:
-    # Use the IP of your dedicated mgmt-vault-transit VM
-    vault_addr: "http://{{ cluster_vault_address }}:8200"
-    vault_token: "{{ cluster_vault_root_token }}"
-  tags:
-    - argocd
-
-  tasks:
-    # -------------------------------------------------------------------------
-    # 1. Create the ArgoCD Policy
-    # -------------------------------------------------------------------------
-    - name: Create ArgoCD  policy via CLI
-      ansible.builtin.shell: |
-        export VAULT_ADDR='http://127.0.0.1:8200'
-        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
-        vault policy write argocd-policy - <<EOF
-        
-        path "auth/token/renew-self*" {
-          capabilities = ["update"]
-        }
-        path "auth/token/lookup-self*" {
-          capabilities = ["read"]
-        }
-        # Allow full access to the ArgoCD GitLab secrets
-        path "secret/data/argocd/gitlab*" {
-          capabilities = ["create", "read", "update", "delete", "list"]
-        }
-        
-        # Essential for Ansible/UI "Preflight" checks
-        path "secret/metadata/argocd/gitlab*" {
-          capabilities = ["list", "read"]
-        }
-        EOF
-      args:
-        executable: /bin/bash
-
-    # -------------------------------------------------------------------------
-    # 2. Configure Kubernetes Auth Role (FIXED)
-    # -------------------------------------------------------------------------
-    - name: Create K8s auth role for ArgoCD via CLI
-      ansible.builtin.shell: |
-        export VAULT_ADDR='http://127.0.0.1:8200'
-        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
-        vault write auth/kubernetes/role/argocd-role \
-            bound_service_account_names="argocd-repo-server,argocd-server,argocd-application-controller,external-secrets" \
-            bound_service_account_namespaces="argocd,external-secrets" \
-            policies="argocd-policy" \
-            ttl="1h" \
-            max_ttl="24h"
-      args:
-        executable: /bin/bash
-
-    # -------------------------------------------------------------------------
-    # 3. Seed GitLab Secrets into KV2
-    # -------------------------------------------------------------------------
-    - name: Write GitLab group token into Vault KV2 via CLI
-      ansible.builtin.shell: |
-        export VAULT_ADDR='http://127.0.0.1:8200'
-        export VAULT_TOKEN='{{ cluster_vault_root_token }}'
-        vault kv put secret/argocd/gitlab \
-            url="{{ gitlab_repo_url }}" \
-            username="{{ gitlab_user }}" \
-            password="{{ gitlab_group_token }}" \
-            group="{{ gitlab_group_name }}"
-      args:
-        executable: /bin/bash
-      # no_log: true
-
-    - name: Confirm configuration
-      ansible.builtin.debug:
-        msg: "Vault CLI configuration complete: Policy, Role, and Secrets established locally."
 
 # =============================================================================
 # Play 3: Configure the root app 
@@ -198,12 +113,12 @@
           apiVersion: external-secrets.io/v1
           kind: ExternalSecret
           metadata:
-            name: gitlab-repo-creds
+            name: gitlab-repo-creds  #scretes created in kubernetes for argocd
             namespace: argocd
           spec:
             refreshInterval: "1h"
             secretStoreRef:
-              name: vault-backend # Ensure this SecretStore points to your NEW Vault VM IP
+              name: vault-backend 
               kind: ClusterSecretStore
             target:
               name: gitlab-repo-creds

@@ -40,6 +40,22 @@
           image_uuid: "{{ target_image_id }}"
           ssh_key_file: "{{ local_public_key }}"
           key_pair: "{{ default_key_pair }}"
+    
+    - name: Remove old host key before updating
+      ansible.builtin.known_hosts:
+        name: "cloud-services"
+        state: absent
+      register: remove_key_result
+      failed_when: false
+    
+
+    - name: Remove old host key before updating
+      ansible.builtin.known_hosts:
+        name: "{{ cloud_service_vm_IPv4 }}"
+        state: absent
+      register: remove_key_result
+      failed_when: false
+  
 
   
 
@@ -146,16 +162,57 @@
 
     - name: Ensure parent directory for Pi-hole custom.list exists
       file:
-        path: "{{ project_path }}/pihole"
+        path: "./pihole/hosts"
         state: directory
         mode: '0755'
 
-    - name: Inject Local DNS records into Pi-hole
-      ansible.builtin.blockinfile:
-        path: "{{ project_path }}/pihole/custom.list" # Update this to your host path for Pi-hole config
-        create: yes
-        marker: "# {mark} ANSIBLE MANAGED LAN RECORDS"
-        block: |
+    # - name: Inject Local DNS records into Pi-hole
+    #   ansible.builtin.blockinfile:
+    #     path: "./pihole/hosts/custom.list" # Update this to your host path for Pi-hole config
+    #     create: yes
+    #     marker: "# {mark} ANSIBLE MANAGED LAN RECORDS"
+    #     block: |
+    #       {{ external_ip }} argocd.ncs-cloud.lan
+    #       {{ external_ip }} bastion-server.ncs-cloud.lan
+    #       {{ external_ip }} dns.ncs-cloud.lan
+    #       {{ external_ip }} wireguard.ncs-cloud.lan
+    #       {{ external_ip }} fproxy.ncs-cloud.lan
+    #       {{ external_ip }} vault.ncs-cloud.lan
+    #       {{ external_ip }} gitlab.ncs-cloud.lan
+    #       {{ external_ip }} grafana.ncs-cloud.lan
+    #       {{ external_ip }} hubble.ncs-cloud.lan
+    #       {{ external_ip }} master.seaweedfs.ncs-cloud.lan
+    #       {{ external_ip }} prometheus.ncs-cloud.lan
+    #       {{ external_ip }} s3.seaweedfs.ncs-cloud.lan
+    #       {{ external_ip }} uptime.ncs-cloud.lan
+
+    #       {{ cilium_gateway }}  argocd.internal.ncs-cloud.lan
+    #       10.10.10.10  bastion-server.internal.ncs-cloud.lan
+    #       10.10.40.3   cloud-services.internal.ncs-cloud.lan
+    #       10.10.40.3   dns.internal.ncs-cloud.lan
+    #       10.10.40.3   wireguard.internal.ncs-cloud.lan
+    #       10.10.10.10  fproxy.internal.ncs-cloud.lan
+    #       10.10.40.4   vault.internal.ncs-cloud.lan
+    #       10.10.20.3   filer.seaweedfs.internal.ncs-cloud.lan
+    #       10.10.20.4   gitlab-server.internal.ncs-cloud.lan
+    #       10.10.30.10  gpu-worker-01.internal.ncs-cloud.lan
+    #       {{ cilium_gateway }}  grafana.internal.ncs-cloud.lan
+    #       {{ cilium_gateway }}  hubble.internal.ncs-cloud.lan
+    #       10.10.30.13  inference-worker-01.internal.ncs-cloud.lan
+    #       10.10.30.3   k3s-master-01.internal.ncs-cloud.lan
+    #       10.10.30.11  k3s-worker-01.internal.ncs-cloud.lan
+    #       10.10.30.12  k3s-worker-02.internal.ncs-cloud.lan
+    #       10.10.20.3   master.seaweedfs.internal.ncs-cloud.lan
+    #       10.10.10.4   mgmt-vault.internal.ncs-cloud.lan
+    #       {{ cilium_gateway }}  prometheus.internal.ncs-cloud.lan
+    #       10.10.20.3   s3.seaweedfs.internal.ncs-cloud.lan
+    #       10.10.20.3   seaweedfs.internal.ncs-cloud.lan
+    #       10.10.40.3   uptime.internal.ncs-cloud.lan
+    #   register: pihole_dns
+
+    - name: Define Pi-hole DNS records as a fact
+      ansible.builtin.set_fact:
+        pihole_lan_records: |
           {{ external_ip }} argocd.ncs-cloud.lan
           {{ external_ip }} bastion-server.ncs-cloud.lan
           {{ external_ip }} dns.ncs-cloud.lan
@@ -169,31 +226,31 @@
           {{ external_ip }} prometheus.ncs-cloud.lan
           {{ external_ip }} s3.seaweedfs.ncs-cloud.lan
           {{ external_ip }} uptime.ncs-cloud.lan
-
-          
-          {{ cilium_gateway }}  argocd.internal.ncs-cloud.lan
-          10.10.10.10  bastion-server.internal.ncs-cloud.lan
-          10.10.40.3   cloud-services.internal.ncs-cloud.lan
-          10.10.40.3   dns.internal.ncs-cloud.lan
-          10.10.40.3   wireguard.internal.ncs-cloud.lan
-          10.10.10.10  fproxy.internal.ncs-cloud.lan
-          10.10.40.4   vault.internal.ncs-cloud.lan
-          10.10.20.3   filer.seaweedfs.internal.ncs-cloud.lan
-          10.10.20.4   gitlab-server.internal.ncs-cloud.lan
-          10.10.30.10  gpu-worker-01.internal.ncs-cloud.lan
-          {{ cilium_gateway }}  grafana.internal.ncs-cloud.lan
-          {{ cilium_gateway }}  hubble.internal.ncs-cloud.lan
-          10.10.30.13  inference-worker-01.internal.ncs-cloud.lan
-          10.10.30.3   k3s-master-01.internal.ncs-cloud.lan
-          10.10.30.11  k3s-worker-01.internal.ncs-cloud.lan
-          10.10.30.12  k3s-worker-02.internal.ncs-cloud.lan
-          10.10.20.3   master.seaweedfs.internal.ncs-cloud.lan
-          10.10.10.4   mgmt-vault.internal.ncs-cloud.lan
-          {{ cilium_gateway }}  prometheus.internal.ncs-cloud.lan
-          10.10.20.3   s3.seaweedfs.internal.ncs-cloud.lan
-          10.10.20.3   seaweedfs.internal.ncs-cloud.lan
-          10.10.40.3   uptime.internal.ncs-cloud.lan
-      register: pihole_dns
+          {{ cilium_gateway }} argocd.internal.ncs-cloud.lan
+          10.10.10.10 bastion-server.internal.ncs-cloud.lan
+          10.10.40.3 cloud-services.internal.ncs-cloud.lan
+          10.10.40.3 dns.internal.ncs-cloud.lan
+          10.10.40.3 wireguard.internal.ncs-cloud.lan
+          10.10.10.10 fproxy.internal.ncs-cloud.lan
+          10.10.40.4 vault.internal.ncs-cloud.lan
+          10.10.40.4 cluster-vault.internal.ncs-cloud.lan
+          10.10.20.3 filer.seaweedfs.internal.ncs-cloud.lan
+          10.10.20.4 gitlab-server.internal.ncs-cloud.lan
+          10.10.30.10 gpu-worker-01.internal.ncs-cloud.lan
+          {{ cilium_gateway }} grafana.internal.ncs-cloud.lan
+          {{ cilium_gateway }} hubble.internal.ncs-cloud.lan
+          10.10.30.13 inference-worker-01.internal.ncs-cloud.lan
+          10.10.30.3 k3s-master-01.internal.ncs-cloud.lan
+          10.10.30.11 k3s-worker-01.internal.ncs-cloud.lan
+          10.10.30.12 k3s-worker-02.internal.ncs-cloud.lan
+          10.10.20.3 master.seaweedfs.internal.ncs-cloud.lan
+          10.10.10.4 mgmt-vault.internal.ncs-cloud.lan
+          {{ cilium_gateway }} prometheus.internal.ncs-cloud.lan
+          10.10.20.3 s3.seaweedfs.internal.ncs-cloud.lan
+          10.10.20.3 seaweedfs.internal.ncs-cloud.lan
+          10.10.40.3 uptime.internal.ncs-cloud.lan
+    
+    
     - name: Ensure dnsmasq configuration directory exists for Pi-hole
       file:
         path: "{{ project_path }}/pihole/dnsmasq.d"
@@ -284,16 +341,16 @@
                 # Use Unbound via Docker bridge networking
                 PIHOLE_DNS_: 'unbound#5335' 
                 FTLCONF_webserver_api_password: '{{ pihole_admin_pass }}'
-                FTLCONF_dns_hosts: '/etc/pihole/hosts/custom.list'
                 FTLCONF_dns_listeningMode: 'ALL'
                 # Required for cross-subnet/VPC resolution
                 DNSMASQ_LISTENING: 'all'
                 DNSMASQ_ALLOW_NON_LOCAL: 'true'
                 INTERFACE: ens3
+                FTLCONF_dns_hosts: |
+                    {{ pihole_lan_records | indent(10, first=False) }}
               volumes:
-                - '{{ project_path }}/pihole/custom.list:/etc/pihole/hosts/custom.list'
                 - '{{ project_path }}/pihole/dnsmasq.d/99-allow-local.conf:/etc/dnsmasq.d/99-allow-local.conf' 
-                - pihole_config:/etc/pihole
+                - pihole-config:/etc/pihole
               restart: always
 
             unbound:
@@ -347,7 +404,9 @@
 
           volumes:
             uptime-kuma:
-            pihole_config:
+            pihole-config:
+
+    
 
     - name: Disable systemd-resolved to free Port 53
       service:

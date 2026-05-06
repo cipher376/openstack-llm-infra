@@ -16,7 +16,7 @@ provider "openstack" {
 
 resource "openstack_blockstorage_volume_v3" "model_storage" {
   name          = "model-registry-1tb"
-  volume_type   = "ncs-hdd"
+  volume_type   = "ncs-nvme"
   size          = 1000
 }
 
@@ -36,7 +36,7 @@ resource "openstack_compute_instance_v2" "seaweedfs" {
     uuid                  = var.image_UUId
     source_type           = "image"
     destination_type      = "volume"
-    volume_size           = 30
+    volume_size           = 15
     boot_index            = 0
     delete_on_termination = true
     volume_type           = "ncs-nvme"

@@ -36,23 +36,41 @@
           key_pair: "{{ default_key_pair }}"
           image_UUId: "{{ target_image_id }}"
     
-    # - name: Wait for cloud-init to finish
-    #   ansible.builtin.shell: cloud-init status --wait
-    #   register: cloud_init_output
-    #   failed_when: "'done' not in cloud_init_output.stdout"
-    #   changed_when: false
-    #   retries: 100
-    #   delay: 10
+    - name: Remove old host key before updating
+      ansible.builtin.known_hosts:
+        name: "gitlab-server"
+        state: absent
+      register: remove_key_result
+      failed_when: false
+
+
+    - name: Remove old host key before updating
+      ansible.builtin.known_hosts:
+        name: "{{ gitlab_vm_ipv4 }}"
+        state: absent
+      register: remove_key_result
+      failed_when: false
+
 - name: Wait for  vm to become ready
   hosts: gitlab_server
   gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml 
   tags:
     - gitlab
   tasks:
+  
     - name: Ensure SSH is responding
-      wait_for_connection:
-        delay: 15      # Wait 10s before even trying
-        timeout: 300   # Give up after 5 mins
+      wait_for:
+        host: gitlab-server
+        port: 22
+        timeout: 60
+      ignore_errors: true
+      delegate_to: "{{ gitlab_vm_ipv4 }}"
+      remote_user: ubuntu
+      vars:
+        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 
 
 #--------------------------------------------------------------------------------#
@@ -72,7 +90,7 @@
   tasks:
 
     - name: Configure DNS records
-      include_tasks: "../security/dns-config-task.yml"
+      include_tasks: "../security/dns_config_task.yml"
     
 # ------------------------------------------------------------------ #
 #  SECTION 1 — SYSTEM PREPARATION                                    #

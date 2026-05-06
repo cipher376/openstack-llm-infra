@@ -21,6 +21,10 @@
       listen: "nginx config changed"
 
   tasks:
+    
+    - name: Configure DNS records
+      include_tasks: "../security/dns_config_task.yml"
+
     - name: Install Nginx and Squid
       apt:
         name: [nginx, squid]
@@ -39,8 +43,9 @@
               client_max_body_size 10G;
 
               location / {
-                  proxy_pass http://{{ gitlab_url }};
-        
+                  resolver {{ local_dns_IPv4 }} valid=30s;
+                  set $upstream_service "http://{{ gitlab_url }}";
+                  proxy_pass $upstream_service;
                   # 2. Standard Proxy Headers
                   proxy_set_header Host $host;
                   proxy_set_header X-Real-IP $remote_addr;
@@ -87,7 +92,9 @@
                   proxy_buffering off;
 
                   location / {
-                      proxy_pass http://{{ seaweedfs_url }}:8888;
+                      resolver {{ local_dns_IPv4 }} valid=30s;
+                      set $upstream_service "http://{{ seaweedfs_url }}:8888";
+                      proxy_pass $upstream_service;
                       proxy_set_header Host $host;
                       proxy_set_header X-Real-IP $remote_addr;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -101,7 +108,9 @@
                   server_name {{ master_seaweedfs_external_url }};
 
                   location / {
-                      proxy_pass http://{{ seaweedfs_url }}:9333;
+                      resolver {{ local_dns_IPv4 }} valid=30s;
+                      set $upstream_service "http://{{ seaweedfs_url }}:9333";
+                      proxy_pass $upstream_service;
                       proxy_set_header Host $host;
                       proxy_set_header X-Real-IP $remote_addr;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -118,7 +127,9 @@
                   proxy_buffering off;
 
                   location / {
-                      proxy_pass http://{{ seaweedfs_url }}:8333;
+                      resolver {{ local_dns_IPv4 }} valid=30s;
+                      set $upstream_service "http://{{ seaweedfs_url }}:8333";
+                      proxy_pass $upstream_service;
                       proxy_set_header Host $host;
                       proxy_set_header X-Real-IP $remote_addr;
                       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -140,38 +151,37 @@
         dest: /etc/nginx/sites-available/pihole-proxy
         content: |
           server {
-              listen 80;
-              server_name {{ pihole_external_url }};
+            listen 80;
+            server_name {{ pihole_external_url }};
+            resolver {{ local_dns_IPv4 }} valid=30s;
 
-              location /admin/ {
-              proxy_pass http://{{ pihole_url }}/admin/;
-              include /etc/nginx/proxy_params;
-              proxy_redirect http://{{ pihole_url }}/ /;
+            # 1. Immediate redirect from / to /admin/
+            location = / {
+                return 301 /admin/;
+            }
+
+            # 2. Pi-hole Admin Interface
+            location /admin/ {
+                set $upstream_pihole "http://{{ pihole_url }}"; 
+                proxy_pass $upstream_pihole;
+
+                include /etc/nginx/proxy_params;
+
+                # This fixes headers if Pi-hole tries to redirect to its internal IP
+                proxy_redirect http://{{ pihole_url }}/ /;
+                proxy_set_header Host $host;
+            }
+
+            # 3. Handle API and other assets
+            location / {
+                set $upstream_root "http://{{ pihole_url }}";
+                proxy_pass $upstream_root;
+
+                include /etc/nginx/proxy_params;
+                proxy_redirect http://{{ pihole_url }}/ /;
+            }
+
           }
-
-          # 2. CRITICAL: Handle the API calls specifically
-          # This prevents the 301/308 redirect on POST requests
-          location /api/ {
-              proxy_pass http://{{ pihole_url }}/api/;
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-          }
-
-          # 3. Handle the login and other root-level redirects
-          location / {
-              # If the backend sends a redirect, we capture and fix it here
-              proxy_pass http://{{ pihole_url }};
-              proxy_redirect http://{{ pihole_url }}/ /;
-
-              # If it's just the root, send them to admin
-              if ($request_uri = "/") {
-                  return 301 $scheme://$host/admin/;
-              }
-          }
-
-                }
       notify: "nginx config changed"
 
     - name: Enable Pi-hole proxy site
@@ -188,11 +198,13 @@
         dest: /etc/nginx/sites-available/uptime-proxy
         content: |
             server {
+            resolver {{ local_dns_IPv4 }} valid=30s;
             listen 80;
             server_name {{ uptime_external_url }};
 
             location / {
-                proxy_pass http://{{ uptime_url }}:3001; # Default Uptime Kuma port
+                set $upstream_service "http://{{ uptime_url }}:3001";
+                proxy_pass $upstream_service;
 
                 # WebSocket Support (CRITICAL)
                 proxy_http_version 1.1;
@@ -219,53 +231,16 @@
         state: link
       notify: "nginx config changed"
 
-#==========================ArgoCD============================================
-    - name: Configure Services  access (ArgoCD)
-      copy:
-        dest: /etc/nginx/sites-available/argocd-proxy
-        content: |
-            server {
-                listen 80;
-                server_name {{ argocd_external_url }};
-
-                location / {
-                    proxy_pass http://{{ argocd_url }};
-                    proxy_set_header Host $host;
-                    proxy_set_header X-Real-IP $remote_addr;
-                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-
-                    # Ensure websockets work for the Argo UI
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade $http_upgrade;
-                    proxy_set_header Connection "upgrade";
-
-                    # Vault Specifics
-                    proxy_connect_timeout 60s;
-                    proxy_read_timeout 60s;
-
-                    # Increase body size for uploading large secret files/policies
-                    client_max_body_size 10M;
-                }
-            }
-      notify: "nginx config changed"
-
-    - name: Enable argocd proxy site
-      file:
-        src: /etc/nginx/sites-available/argocd-proxy
-        dest: /etc/nginx/sites-enabled/argocd-proxy
-        state: link
-      notify: "nginx config changed"
-
-
 #==========================Vault============================================
     - name: Configure Services  access (Vault)
       copy:
         dest: /etc/nginx/sites-available/vault-proxy
         content: |
             server {
+                resolver {{ local_dns_IPv4 }} valid=30s;
                 listen 80;
-                server_name {{ vault_url }};
-            
+                server_name {{ vault_external_url }};
+
                 # 1. Force redirect from the root / to /ui/
                 location = / {
                     return 301 /ui/;
@@ -274,8 +249,8 @@
                 # 2. Handle all other requests (UI assets and API calls)
                 location / {
                     # Point to the base URL without the /ui/ suffix
-                    proxy_pass http://{{ vault_url }}:8200;
-                    
+                    set $upstream_service "http://{{ vault_url }}:8200";
+                    proxy_pass $upstream_service;
                     proxy_set_header Host $host;
                     proxy_set_header X-Real-IP $remote_addr;
                     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -304,6 +279,14 @@
         state: link
       notify: "nginx config changed"
       
+
+#==========================K3s_config_task ============================================
+    - name: Configure proxy routes for k3s gateway
+      include_tasks: "../security/proxy_k3s_task.yml"
+
+#======================================================================================
+
+
     - name: Remove Default Nginx Site
       file:
         path: /etc/nginx/sites-enabled/default

@@ -11,20 +11,20 @@
 # Setup openstack Network and security groups
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/common/05_provision_bastion.yml
-- import_playbook: ansible/playbooks/ncs/cloud-services/services-conf.yml
+- import_playbook: ansible/playbooks/ncs/cloud-services/services_conf.yml
 
 
 #--------------------------------------------------------------------------------#
 # Deploy  vaults
 #--------------------------------------------------------------------------------#
-- import_playbook: ansible/playbooks/ncs/vault/config-vault.yml
+- import_playbook: ansible/playbooks/ncs/vault/config_vault.yml
 
 
 #--------------------------------------------------------------------------------#
 # Deploy Storage vms
 #--------------------------------------------------------------------------------#
-- import_playbook: ansible/playbooks/ncs/gitlab/gitlab-config.yml
-- import_playbook: ansible/playbooks/ncs/seaweedfs/seaweedfs-config.yml
+- import_playbook: ansible/playbooks/ncs/gitlab/gitlab_config.yml
+- import_playbook: ansible/playbooks/ncs/seaweedfs/seaweedfs_config.yml
 
 
 #--------------------------------------------------------------------------------#
@@ -43,11 +43,15 @@
 #--------------------------------------------------------------------------------#
 # Configure Security
 #--------------------------------------------------------------------------------#
-- import_playbook: ansible/playbooks/ncs/security/proxy-config.yml
-# - import_playbook: ansible/playbooks/ncs/security/dns-config.yml
+- import_playbook: ansible/playbooks/ncs/security/proxy_config.yml
+- import_playbook: ansible/playbooks/ncs/security/physical_router_dns_config.yml
 
 #--------------------------------------------------------------------------------#
 # Deploy ARGOCD
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/kubernetes/argocd.yml
 
+#--------------------------------------------------------------------------------#
+# Preload application secrets
+#--------------------------------------------------------------------------------#
+- import_playbook: ansible/playbooks/ncs/vault/load_app_secrets.yml

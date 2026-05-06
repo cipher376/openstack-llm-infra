@@ -8,6 +8,7 @@ ubuntu_image: "Ubuntu-24.04-Minimal"
 secrets_path: "/home/antiamoah890/Scripts/openstack-llm-infra/secrets"
 default_key_pair: "cluster-auth-key"
 
+openstack_vip: "172.16.0.254" #ncs-cloud.lan
 public_allocation_pool_start: "172.16.20.129"
 public_allocation_pool_end: "172.16.20.254"
 public_cidr: "172.16.20.0/24"
@@ -38,8 +39,10 @@ mgmt_vault_address: "mgmt-vault.internal.ncs-cloud.lan"
 
 #Cluster vault
 cluster_vault_ipv4: "10.10.40.4"
-cluster_vault_address: "cluster-vault.internal.ncs-cloud.lan"
+cluster_vault_address: "vault.internal.ncs-cloud.lan"
 cluster_vault_external_address: "vault.ncs-cloud.lan"
+vault_external_url: "vault.ncs-cloud.lan"
+vault_url: "vault.internal.ncs-cloud.lan"
 
 
 # Jumbox
@@ -67,7 +70,7 @@ k3s_subnet: "k3s_private_net"
 network_interface: "ens3"
 k3s_gateway_ipv4: "10.10.30.252"
 k3s_gateway_url: "k3s-gateway.internal.ncs-cloud.lan"
-
+k3s_worker_count: 3
 
 #Gitlab
 gitlab_vm_ipv4: "10.10.20.4"
@@ -99,6 +102,11 @@ uptime_url: "uptime.internal.ncs-cloud.lan"
 argocd_external_url: "argocd.ncs-cloud.lan"
 argocd_url:  "argocd.internal.ncs-cloud.lan"
 
+#HUBBLE
+hubble_external_url: "hubble.ncs-cloud.lan"
+hubble_url:  "hubble.internal.ncs-cloud.lan"
 
-vault_external_url: "vault.ncs-cloud.lan"
-vault_url: "vault.internal.ncs-cloud.lan"
+#GRAFANA
+grafana_external_url: "grafana.ncs-cloud.lan"
+grafana_url:  "grafana.internal.ncs-cloud.lan"
+  

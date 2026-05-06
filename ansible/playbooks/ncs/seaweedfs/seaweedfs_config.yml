@@ -1,0 +1,318 @@
+---
+#--------------------------------------------------------------------------------#
+# Setup Seaweedfs vm nodes with terraform
+#--------------------------------------------------------------------------------#
+- name: Set up vm nodes with terraform
+  hosts: localhost
+  vars_files: 
+    - ../../../secrets/vault.yml   
+    - ../../../vars.yml    
+  tags:
+    - seaweedfs
+  tasks:
+    - name: Get image information by name
+      openstack.cloud.image_info:
+        image: "{{ ubuntu_image }}"
+      register: image_search
+
+    - name: Set the Image ID as a fact
+      set_fact:
+        target_image_id: "{{ image_search.images[0].id }}"
+      when: image_search.images | length > 0
+
+    - name: Debug the ID
+      debug:
+        msg: "The ID for target image is {{ target_image_id }}"
+      when: target_image_id is defined
+
+    - name: Deploy seaweedfs vm
+      community.general.terraform:
+        project_path: "../../../../terraform/seaweedfs"
+        state: present
+        force_init: yes
+        variables:
+          ssh_public_key: "{{ local_public_key }}"
+          seaweedfs_vm_ipv4: "{{ seaweedfs_vm_ipv4 }}"
+          image_UUId: "{{ target_image_id }}"
+
+
+- name: Wait for vault vm to become ready
+  hosts: seaweedfs_servers
+  gather_facts: no  # Must be no, because we can't gather facts if SSH is down!
+  tags:
+    - seaweedfs
+  tasks:
+    - name: Ensure SSH is responding
+      wait_for_connection:
+        delay: 10      # Wait 10s before even trying
+        timeout: 30   # Give up after 5 mins
+      ignore_errors: yes
+
+
+- name: Install and configure seaweedfs
+  hosts: seaweedfs_servers  
+  become: yes
+  vars_files: 
+    - ../../../../secrets/vault.yml     
+    - ../../../vars.yml
+  vars:
+    seaweed_version: "3.59" # Update to the latest version as needed
+    seaweed_install_dir: "/usr/local/bin"
+    seaweed_data_dir: "/data/models/seaweedfs"
+    seaweed_config_dir: "/etc/seaweedfs"
+    # Use internal IP for cluster communication, 0.0.0.0 for listening
+    bind_ip: "0.0.0.0"
+
+    seaweed_users:
+      - name: "kubeflow-admin"
+        access_key: "{{ seaweedfs_admin_access_key }}"
+        secret_key: "{{ seaweedfs_admin_access_secret }}"
+        actions: ["Read", "Write", "List", "Tagging", "Admin"]
+        
+      - name: "developer-read-only"
+        access_key: "{{ seaweedfs_developer_read_access_key }}"
+        secret_key: "{{ seaweedfs_developer_read_access_secret }}"
+        actions: ["Read", "List"]
+
+      - name: "developer-full"
+        access_key: "{{ seaweedfs_developer_write_access_key }}"
+        secret_key: "{{ seaweedfs_developer_write_access_secret }}"
+        actions: ["Read","Write","List"]
+  tags:
+    - seaweedfs
+    - seaweedfs-config
+
+  tasks:
+    
+    - name: Configure DNS records
+      include_tasks: "../security/dns_config_task.yml"
+    
+    - name: Install dependencies
+      apt:
+        name: [tar, wget, curl]
+        state: present
+        update_cache: yes
+
+    - name: Ensure SeaweedFS config directory exists
+      become: yes
+      ansible.builtin.file:
+        path: "{{ seaweed_config_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+        recurse: yes
+
+    - name: Generate security.toml with JWT enabled
+      ansible.builtin.copy:
+        dest: "{{ seaweed_config_dir }}/security.toml"
+        content: |
+          # Global security settings for SeaweedFS
+          # ===============================================================
+          # 1. JWT KEYS FOR MASTER AND VOLUME (File Read/Write)
+          # ===============================================================
+          # Used by Master to generate JWTs and by Volume servers to validate them.
+          # Protects the HTTP endpoints for file uploads, downloads, and deletes.
+          
+          [jwt.signing]
+          key = "{{ seaweedfs_jwt_key }}"
+          expires_after_seconds = 10 
+
+          # Optional: JWT for read operations on volumes.
+          [jwt.signing.read]
+          key = "{{ seaweedfs_jwt_key }}"                   # Required for reads
+          expires_after_seconds = 10
+          
+          # ===============================================================
+          # 2. JWT KEYS FOR THE FILER (REST API)
+          # ===============================================================
+          # Starting with version 2.84, Filer HTTP endpoints are secured with their own JWTs.
+          # These keys are validated by the Filer; they MUST be known to any JWT issuer
+          # (e.g., the S3 gateway or your own application that issues tokens).
+          
+          [jwt.filer_signing]
+          key = "{{ seaweedfs_jwt_key }}"                          # Required for write HTTP calls
+          expires_after_seconds = 10
+          
+          [jwt.filer_signing.read]
+          key = "{{ seaweedfs_jwt_key }}"                           # Required for read HTTP calls
+          expires_after_seconds = 10
+
+          # ===============================================================
+          # 3. OPTIONAL: CORS & UI ACCESS (Adjust for your environment)
+          # ===============================================================
+          [cors.allowed_origins]
+          values = ["*"]
+
+          [access]
+          ui = false  # Disable volume web UI when JWT is active (recommended)
+
+
+
+
+          [jwt.filer_permission]
+          enabled = true
+
+          [jwt.master_permission]
+          enabled = true
+
+          [jwt.volume_permission]
+          enabled = true
+
+        mode: '644' # Restricted access to root/service user
+      notify: Restart SeaweedFS Services
+
+    - name: Secure the security.toml file specifically
+      become: yes
+      ansible.builtin.file:
+        path: "{{ seaweed_config_dir }}/security.toml"
+        owner: ubuntu
+        group: ubuntu
+        mode: '644' 
+
+    - name: Generate s3_config.json from template
+      ansible.builtin.template:
+        src: templates/s3_config.json.j2
+        dest: "{{ seaweed_config_dir }}/s3_config.json"
+        mode: '0644'
+      notify: Restart SeaweedFS Services
+
+    - name: Create SeaweedFS directories on the 1TB drive
+      become: yes
+      ansible.builtin.file:
+        path: "{{ seaweed_data_dir }}/{{ item }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+        recurse: yes
+      loop:
+        - data
+        - filerldb2
+        - master
+
+    
+
+    - name: Create SeaweedFS user configuration directory
+      ansible.builtin.file:
+        path: /home/ubuntu/.seaweedfs
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+    - name: Symlink security.toml to user home for auto-discovery
+      ansible.builtin.file:
+        src: "{{ seaweed_config_dir }}/security.toml"
+        dest: /home/ubuntu/.seaweedfs/security.toml
+        owner: ubuntu
+        group: ubuntu
+        state: link
+        mode: '0644'
+        force: yes
+      notify: Restart SeaweedFS Services
+
+    - name: Download and extract SeaweedFS binary
+      unarchive:
+        src: "https://github.com/seaweedfs/seaweedfs/releases/download/{{ seaweed_version }}/linux_amd64.tar.gz"
+        dest: "{{ seaweed_install_dir }}"
+        remote_src: yes
+        creates: "{{ seaweed_install_dir }}/weed"
+
+    - name: Stop and Disable existing services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: no
+      loop:
+        - seaweedfs-s3
+        - seaweedfs-volume
+        - seaweedfs-filer
+        - seaweedfs-master
+      ignore_errors: yes
+
+    - name: Remove old systemd unit files
+      ansible.builtin.file:
+        path: "/etc/systemd/system/{{ item }}.service"
+        state: absent
+      loop:
+        - seaweedfs-s3
+        - seaweedfs-volume
+        - seaweedfs-filer
+        - seaweedfs-master
+
+    - name: Reload systemd to recognize deletions
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Create SeaweedFS Systemd Units
+      become: yes
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/{{ item.service_name }}.service"
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=SeaweedFS {{ item.cmd | title }}
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=ubuntu
+          Group=ubuntu
+          # Note: No security flags! The binary reads /etc/seaweedfs/security.toml automatically.
+          ExecStart=/usr/local/bin/weed {{ item.cmd }} \
+            -metricsPort={{ item.m_port }} \
+            {% if item.cmd == 'master' %} -mdir=/data/models/seaweedfs/master -volumeSizeLimitMB=30000 {% endif %} \
+            {% if item.cmd == 'filer' %} -master=localhost:9333 -defaultStoreDir=/data/models/seaweedfs/filerldb2   -iam {% endif %} \
+            {% if item.cmd == 'volume' %} -mserver=localhost:9333 -port=8080 -dir=/data/models/seaweedfs/data -max=0 {% endif %} \
+            {% if item.cmd == 's3' %} -filer=localhost:8888 -config=/etc/seaweedfs/s3_config.json -ip.bind={{ bind_ip }}  {% endif %}
+
+          Restart=always
+          RestartSec=10
+          LimitNOFILE=65536
+
+          [Install]
+          WantedBy=multi-user.target
+      loop:
+        - { service_name: 'seaweedfs-master', cmd: 'master', m_port: 9320 }
+        - { service_name: 'seaweedfs-filer', cmd: 'filer',  m_port: 9321 }
+        - { service_name: 'seaweedfs-volume', cmd: 'volume', m_port: 9322 }
+        - { service_name: 'seaweedfs-s3', cmd: 's3',     m_port: 9323 }
+
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: yes
+
+    - name: Ensure all SeaweedFS services are enabled and running
+      become: yes
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - seaweedfs-master
+        - seaweedfs-volume
+        - seaweedfs-filer
+        - seaweedfs-s3
+
+    - name: Upload S3 config to Filer store
+      ansible.builtin.shell: |
+        curl -X POST -F file=@/etc/seaweedfs/s3_config.json http://localhost:8888/buckets/
+      register: upload_result
+      until: upload_result.rc == 0
+      retries: 5
+      delay: 5
+      tags:
+        - run
+
+  handlers:
+    - name: Restart SeaweedFS Services
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        state: restarted
+        enabled: yes
+      loop:
+        - seaweedfs-master
+        - seaweedfs-volume
+        - seaweedfs-filer
+        - seaweedfs-s3
+      ignore_errors: yes

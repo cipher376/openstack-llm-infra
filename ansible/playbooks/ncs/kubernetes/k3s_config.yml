@@ -5,7 +5,7 @@
 - name: Set up vm nodes with terraform
   hosts: localhost
   vars_files: 
-    - ../../../secrets/vault.yml   
+    - ../../../../secrets/vault.yml   
     - ../../../vars.yml    
   tags:
     - k3s
@@ -37,11 +37,27 @@
           ssh_key_file: "{{ local_public_key }}"
           image_uuid: "{{ target_image_id }}"
           k3s_master_01_vm_ipv4: "{{ k3s_master_01_ipv4 }}"
-          k3s_worker_01_vm_ipv4: "{{ k3s_worker_01_ipv4 }}"
-          k3s_worker_02_vm_ipv4: "{{ k3s_worker_02_ipv4 }}"
           gpu_worker_01_vm_ipv4: "{{ gpu_worker_01_ipv4 }}"
-          inference_worker_01_vm_ipv4: "{{ inference_worker_ipv4 }}"
           k3s_subnet: "{{ k3s_subnet }}"
+          k3s_worker_count: "{{  k3s_worker_count }}"
+      register: tf_output
+
+    
+
+    - name: Build local inventory file
+      ansible.builtin.blockinfile:
+        path: "{{ host_file_path }}"
+        marker: "# {mark} ANSIBLE MANAGED K3S WORKERS"
+        block: |
+        
+          [k3s_servers]
+          k3s-master-01 ansible_host={{ k3s_master_01_ipv4}} ansible_user=ubuntu
+          gpu-worker-01 ansible_host={{ gpu_worker_01_ipv4}} ansible_user=ubuntu
+          {% for ip in tf_output.outputs.worker_ips.value %}
+          k3s-worker-{{ "%02d" | format(loop.index) }} ansible_host={{ ip }} ansible_user=ubuntu
+          {% endfor %}
+
+
 
 
 - name: Wait for vault vm to become ready
@@ -107,7 +123,7 @@
       failed_when: false
 
     - name: Configure DNS records
-      include_tasks: "../security/dns-config-task.yml"
+      include_tasks: "../security/dns_config_task.yml"
 
     - name: Wait for unattended-upgrades to finish
       shell: |
@@ -715,7 +731,7 @@
               - name: http
                 protocol: HTTP
                 port: 80
-                hostname: "*.lan"
+                hostname: "*.internal.ncs-cloud.lan"
                 allowedRoutes:
                   namespaces:
                     from: All
@@ -1025,3 +1041,45 @@
           - "================================================"
       when: ansible_host != k3s_master_ip
 
+
+
+# ------------------------------------------------------------------ #
+#  SECTION  — Allow announcement through the virtual router          #
+# ------------------------------------------------------------------ #
+
+- name: Configure OpenStack Networking for Cilium Gateway
+  hosts: localhost
+  connection: local
+  vars_files: 
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml   
+  tags:
+    - k3s
+  vars:
+    master_vm_name: "k3s-master-01"
+  tasks:
+    - name: Get Master VM Info
+      openstack.cloud.server_info:
+        server: "{{ master_vm_name }}"
+      register: master_vm_info
+
+    - name: Find Port by Device ID
+      openstack.cloud.port_info:
+        filters:
+          device_id: "{{ master_vm_info.servers[0].id }}"
+      register: master_port_info
+
+    - name: Fail if port not found
+      fail:
+        msg: "Could not find an OpenStack port for VM {{ master_vm_name }}"
+      when: master_port_info.ports | length == 0
+
+    - name: Update Port with Allowed Address Pair
+      openstack.cloud.port:
+        state: present
+        name: "{{ master_port_info.ports[0].id }}"
+        # Pull the network ID from the discovered port to satisfy the module
+        network: "{{ master_port_info.ports[0].network_id }}"
+        allowed_address_pairs:
+          - ip_address: "{{ cilium_gateway }}"
+      register: port_update_result

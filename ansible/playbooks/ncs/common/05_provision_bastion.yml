@@ -65,6 +65,25 @@
         content: |
           [bastion_server]
           bastion-server ansible_host={{ external_ip }} ansible_user=ubuntu
+    
+    - name: Ensure .ssh directory exists
+      ansible.builtin.file:
+        path: "~/.ssh"
+        state: directory
+        mode: '0700'
+
+    - name: Add Bastion Host to SSH config
+      ansible.builtin.blockinfile:
+        path: "~/.ssh/config"
+        create: yes
+        mode: '0600'
+        marker: "# {mark} ANSIBLE MANAGED: BASTION SERVER"
+        block: |
+          Host bastion-server
+              HostName {{ external_ip }}
+              User ubuntu
+              IdentityFile ~/.ssh/id_ed25519_cluster
+              StrictHostKeyChecking no
 
 
     - name: Dynamically update inventory for the next play
@@ -82,7 +101,7 @@
       wait_for:
         host: "{{ external_ip }}"
         port: 22
-        timeout: 300
+        timeout: 60
     
     - name: Wait for cloud-init to finish
       command: cloud-init status --wait

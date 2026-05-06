@@ -1,0 +1,16 @@
+{
+  "identities": [
+    {% for user in seaweed_users %}
+    {
+      "name": "{{ user.name }}",
+      "credentials": [
+        {
+          "accessKey": "{{ user.access_key }}",
+          "secretKey": "{{ user.secret_key }}"
+        }
+      ],
+      "actions": {{ user.actions | to_json }}
+    }{{ "," if not loop.last else "" }}
+    {% endfor %}
+  ]
+}
