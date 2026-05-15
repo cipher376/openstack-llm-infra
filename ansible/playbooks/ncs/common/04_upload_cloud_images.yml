@@ -43,9 +43,9 @@
         dest: "{{ image_cache_dir }}/{{ item.item.filename }}"
         mode: '0644'
       loop: "{{ image_results.results }}"
-      # Fix: Accessing the stat result from the registered loop
+      # Download only if the file does not exist
       when: not item.stat.exists
-    
+
     - name: Upload to OpenStack
       openstack.cloud.image:
         state: present
@@ -54,13 +54,10 @@
         disk_format: "qcow2"
         filename: "{{ image_cache_dir }}/{{ item.item.filename }}"
         is_public: true
-        # Ensure it hits your HDD tier
         properties:
           cinder_img_volume_type: "ncs-hdd"
       loop: "{{ image_results.results }}"
-      # This ensures we don't try to upload if the download failed or was skipped
-      when: 
-        - not ansible_check_mode
-        - (item.stat.exists or hostvars['localhost']['download_task'] is not failed)
-      retries: 30
+      register: upload_status
+      until: upload_status is success
+      retries: 3
       delay: 10

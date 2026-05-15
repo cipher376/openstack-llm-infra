@@ -7,6 +7,7 @@ local_private_key: "/home/antiamoah890/.ssh/id_ed25519_cluster"
 ubuntu_image: "Ubuntu-24.04-Minimal"
 secrets_path: "/home/antiamoah890/Scripts/openstack-llm-infra/secrets"
 default_key_pair: "cluster-auth-key"
+root_domain: "ncs-cloud.lan"
 
 openstack_vip: "172.16.0.254" #ncs-cloud.lan
 public_allocation_pool_start: "172.16.20.129"
@@ -16,7 +17,6 @@ physical_router_gateway_ip: "172.16.20.1"
 
 router_ipv4: "172.16.20.232"
 vpc_router_01_url: "vpc-router-01.internal.ncs-cloud.lan"
-
 
 internal_network: "10.10.0.0/16"
 mgmt_net: "mgmt_private_net"
@@ -31,7 +31,6 @@ service_net_range: "10.10.40.0/24"
 k3s_net: "k3s_private_net"
 k3s_net_range: "10.10.30.0/24"
 
-
 #Management vault 
 mgmt_vault_ipv4: "10.10.10.4"
 mgmt_vault_sg: "mgmt-vault-sg"
@@ -44,20 +43,25 @@ cluster_vault_external_address: "vault.ncs-cloud.lan"
 vault_external_url: "vault.ncs-cloud.lan"
 vault_url: "vault.internal.ncs-cloud.lan"
 
+#Keycloak 
+keycloak_version: "26.0"
+keycloak_ipv4: "10.10.40.4"
+keycloak_url: "keycloak.internal.ncs-cloud.lan"
+keycloak_external_url: "keycloak.ncs-cloud.lan"
+
 
 # Jumbox
-BASTION_PUBLIC_IP: "172.16.20.176"
-bastion_insternal_ip: "10.10.10.10"
+bastion_internal_ip: "10.10.10.10"
 proxy_url: "proxy.internal.ncs-cloud.lan"
 proxy_external_url: "proxy.ncs-cloud.lan"
 
-
 # kubernetes
-k3s_version: "v1.29.3+k3s1"
+k3s_version: "v1.35.4+k3s1"
 pod_cidr: "10.244.0.0/16"
 service_cidr: "10.96.0.0/12"
-cilium_version: "1.15.5"
-cilium_lb_ip_range: "10.10.30.254/32"
+cilium_version: "1.19.3"
+cilium_lb_ip_range: "10.10.30.254/32" #default gateway to other application
+cilium_istio_gateway: "10.10.30.253"  #defined in the argocd manifest
 cilium_gateway: "10.10.30.254"
 
 k3s_master_bind_address: "0.0.0.0"
@@ -78,7 +82,6 @@ swap_size: "8G"
 gitlab_external_url: "gitlab.ncs-cloud.lan"
 gitlab_url: "gitlab-server.internal.ncs-cloud.lan"
 
-
 #seaweedfs
 seaweedfs_vm_ipv4: "10.10.20.3"
 seaweedfs_external_url: "seaweedfs.ncs-cloud.lan"
@@ -87,15 +90,16 @@ filer_seaweedfs_external_url: "filer.seaweedfs.ncs-cloud.lan"
 master_seaweedfs_external_url: "master.seaweedfs.ncs-cloud.lan"
 s3_seaweedfs_external_url: "s3.seaweedfs.ncs-cloud.lan"
 
-
 #Cloud-services (dns, vpn)
-cloud_service_vm_IPv4: "10.10.40.3" 
+cloud_service_vm_IPv4: "10.10.40.3"
 local_dns_IPv4: "10.10.40.3"
 pihole_external_url: "dns.ncs-cloud.lan"
 pihole_url: "dns.internal.ncs-cloud.lan"
 dns_search: "ncs-cloud.lan internal.ncs-cloud.lan"
 uptime_external_url: "uptime.ncs-cloud.lan"
 uptime_url: "uptime.internal.ncs-cloud.lan"
+wireguard_external_url: "wireguard.ncs-cloud.lan"
+wireguard_url: "wireguard.internal.ncs-cloud.lan"
 
 
 #ARGOCD BOOTSTRAP
@@ -109,4 +113,14 @@ hubble_url:  "hubble.internal.ncs-cloud.lan"
 #GRAFANA
 grafana_external_url: "grafana.ncs-cloud.lan"
 grafana_url:  "grafana.internal.ncs-cloud.lan"
-  
+
+#Kubeflow
+kubeflow_url: "kubeflow.internal.ncs-cloud.lan"
+kubeflow_external_url: "kubeflow.ncs-cloud.lan"
+
+
+# BEGIN ANSIBLE MANAGED: BASTION PUBLIC_IP
+bastion_public_ip: "172.16.20.246"
+# END ANSIBLE MANAGED: BASTION PUBLIC_IP
+
+

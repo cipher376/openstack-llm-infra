@@ -14,53 +14,6 @@ provider "openstack" {
 }
 
 
-# Kubernetes INSTANCE
-#=========================================================================
-# K3S MASTER
-#==========================================================================
-resource "openstack_blockstorage_volume_v3" "k3s_master_01_boot_vol" {
-  name        = "k3s-master-01-boot-disk"
-  size        = 40
-  image_id    = var.image_uuid
-  description = "Persistent boot disk for cluster Vault"
-  volume_type = "ncs-nvme"
-}
-
-resource "openstack_compute_instance_v2" "k3s_master_01" {
-  name            = "k3s-master-01"
-  flavor_name     = "m1.medium"
-  security_groups = ["internal-sg", "k3s-internal-sg"]
-  config_drive    = true
-
-  # Attach the volume we created above as the boot device
-  block_device {
-    uuid                  = openstack_blockstorage_volume_v3.k3s_master_01_boot_vol.id
-    source_type           = "volume"
-    destination_type      = "volume"
-    boot_index            = 0
-    delete_on_termination = false 
-  }
-
-  network {
-    name        =  var.k3s_subnet
-    fixed_ip_v4 = var.k3s_master_01_vm_ipv4
-  }
-
-  user_data = <<-EOF
-    #cloud-config
-    users:
-      - name: ubuntu
-        groups: sudo
-        shell: /bin/bash
-        sudo: ['ALL=(ALL) NOPASSWD:ALL']
-        ssh_authorized_keys:
-          - ${file(var.ssh_key_file)}
-    runcmd:
-      - apt-get update
-      - apt-get install -y ubuntu-drivers-common
-      - ubuntu-drivers autoinstall
-    EOF
-}
 
 
 #=========================================================================
@@ -158,6 +111,58 @@ resource "openstack_compute_instance_v2" "k3s_worker" {
       - ubuntu-drivers autoinstall
   EOF
 }
+
+
+
+
+# Kubernetes INSTANCE
+#=========================================================================
+# K3S MASTER
+#==========================================================================
+resource "openstack_blockstorage_volume_v3" "k3s_master_01_boot_vol" {
+  name        = "k3s-master-01-boot-disk"
+  size        = 40
+  image_id    = var.image_uuid
+  description = "Persistent boot disk for cluster Vault"
+  volume_type = "ncs-nvme"
+}
+
+resource "openstack_compute_instance_v2" "k3s_master_01" {
+  name            = "k3s-master-01"
+  flavor_name     = "m1.medium"
+  security_groups = ["internal-sg", "k3s-internal-sg"]
+  config_drive    = true
+
+  # Attach the volume we created above as the boot device
+  block_device {
+    uuid                  = openstack_blockstorage_volume_v3.k3s_master_01_boot_vol.id
+    source_type           = "volume"
+    destination_type      = "volume"
+    boot_index            = 0
+    delete_on_termination = false 
+  }
+
+  network {
+    name        =  var.k3s_subnet
+    fixed_ip_v4 = var.k3s_master_01_vm_ipv4
+  }
+
+  user_data = <<-EOF
+    #cloud-config
+    users:
+      - name: ubuntu
+        groups: sudo
+        shell: /bin/bash
+        sudo: ['ALL=(ALL) NOPASSWD:ALL']
+        ssh_authorized_keys:
+          - ${file(var.ssh_key_file)}
+    runcmd:
+      - apt-get update
+      - apt-get install -y ubuntu-drivers-common
+      - ubuntu-drivers autoinstall
+    EOF
+}
+
 
 output "worker_ips" {
   value = openstack_compute_instance_v2.k3s_worker[*].network[0].fixed_ip_v4

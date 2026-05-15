@@ -64,17 +64,17 @@
     bind_ip: "0.0.0.0"
 
     seaweed_users:
-      - name: "kubeflow-admin"
+      - name: "{{ seaweedfs_admin_role }}"
         access_key: "{{ seaweedfs_admin_access_key }}"
         secret_key: "{{ seaweedfs_admin_access_secret }}"
         actions: ["Read", "Write", "List", "Tagging", "Admin"]
         
-      - name: "developer-read-only"
+      - name: "{{ seaweedfs_developer_read_role }}"
         access_key: "{{ seaweedfs_developer_read_access_key }}"
         secret_key: "{{ seaweedfs_developer_read_access_secret }}"
         actions: ["Read", "List"]
 
-      - name: "developer-full"
+      - name: "{{ seaweedfs_developer_write_role }}"
         access_key: "{{ seaweedfs_developer_write_access_key }}"
         secret_key: "{{ seaweedfs_developer_write_access_secret }}"
         actions: ["Read","Write","List"]
@@ -147,8 +147,6 @@
           ui = false  # Disable volume web UI when JWT is active (recommended)
 
 
-
-
           [jwt.filer_permission]
           enabled = true
 
@@ -161,13 +159,7 @@
         mode: '644' # Restricted access to root/service user
       notify: Restart SeaweedFS Services
 
-    - name: Secure the security.toml file specifically
-      become: yes
-      ansible.builtin.file:
-        path: "{{ seaweed_config_dir }}/security.toml"
-        owner: ubuntu
-        group: ubuntu
-        mode: '644' 
+
 
     - name: Generate s3_config.json from template
       ansible.builtin.template:
@@ -301,8 +293,7 @@
       until: upload_result.rc == 0
       retries: 5
       delay: 5
-      tags:
-        - run
+      
 
   handlers:
     - name: Restart SeaweedFS Services

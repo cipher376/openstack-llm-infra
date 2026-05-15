@@ -26,7 +26,7 @@ resource "openstack_blockstorage_volume_v3" "cluster_vault_boot_vol" {
 
 resource "openstack_compute_instance_v2" "cluster_vault" {
   name            = "cluster-vault"
-  flavor_name     = "m1.mini"
+  flavor_name     = "m1.medium"
   security_groups = ["cluster-vault-sg"]
   config_drive    = true
 

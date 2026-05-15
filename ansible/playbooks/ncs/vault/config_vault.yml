@@ -543,11 +543,15 @@
       changed_when: false
       no_log: true
     
-    - name: Ensure KV-V2 engine is enabled at secret/
-      ansible.builtin.shell: |
-        vault secrets enable -path=secret kv-v2
+    - name: Check if secret engine is already enabled
+      ansible.builtin.shell: vault secrets list -format=json
+      register: vault_engines
+      changed_when: false
+    
+    - name: Enable KV-V2 engine at secret/
+      ansible.builtin.shell: vault secrets enable -path=secret kv-v2
+      when: "'secret/' not in (vault_engines.stdout | from_json)"
       no_log: true
-      
       
 
   

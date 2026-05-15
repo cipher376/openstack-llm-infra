@@ -60,17 +60,10 @@
   tags:
     - gitlab
   tasks:
-  
     - name: Ensure SSH is responding
-      wait_for:
-        host: gitlab-server
-        port: 22
-        timeout: 60
-      ignore_errors: true
-      delegate_to: "{{ gitlab_vm_ipv4 }}"
-      remote_user: ubuntu
-      vars:
-        ansible_ssh_extra_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+      wait_for_connection:
+        delay: 10      # Wait 10s before even trying
+        timeout: 300   # Give up after 5 mins
 
 
 #--------------------------------------------------------------------------------#
@@ -153,7 +146,7 @@
         name: "{{ gitlab_version }}"
         state: present
       environment:
-        EXTERNAL_URL: "http://{{ gitlab_external_url }}"
+        EXTERNAL_URL: "https://{{ gitlab_external_url }}"
       register: gitlab_install
       when: gitlab_installed.rc != 0
 
@@ -165,12 +158,20 @@
 #  SECTION 5 — GITLAB CONFIGURATION                                    #
 # ------------------------------------------------------------------ #
 
-    - name: Ensure external URL is set correctly in gitlab.rb
+    - name: Configure GitLab Omnibus settings for reverse proxy
       lineinfile:
         path: /etc/gitlab/gitlab.rb
-        regexp: "^external_url"
-        line: "external_url 'http://{{ gitlab_external_url }}'"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+      loop:
+        - { regexp: "^external_url", line: "external_url 'https://gitlab.ncs-cloud.lan'" }
+        - { regexp: "^nginx\\['listen_port'\\]", line: "nginx['listen_port'] = 80" }
+        - { regexp: "^nginx\\['listen_https'\\]", line: "nginx['listen_https'] = false" }
+        - { regexp: "^gitlab_rails\\['trusted_proxies'\\]", line: "gitlab_rails['trusted_proxies'] = ['{{ bastion_internal_ip }}','{{ bastion_public_ip }}']" }
       register: gitlab_rb_changed
+
+
 
     - name: Disable prometheus monitoring to save RAM
       lineinfile:
@@ -238,7 +239,7 @@
     - name: Show login information
       debug:
         msg:
-          - "GitLab URL:       http://{{ gitlab_external_url }}"
+          - "GitLab URL:       https://{{ gitlab_external_url }}"
           - "Username:         root"
           - "Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}"
           - "NOTE: Change your password immediately — this file is deleted after 24 hours"
@@ -247,7 +248,7 @@
       copy:
         dest: /tmp/gitlab_login_info.txt
         content: |
-          GitLab URL:       http://{{ gitlab_external_url }}
+          GitLab URL:       https://{{ gitlab_external_url }}
           Username:         root
           Initial password: {{ root_password.stdout_lines | default(['Password file not found — already changed or expired']) }}
           NOTE: Change your password immediately — this file is deleted after 24 hours

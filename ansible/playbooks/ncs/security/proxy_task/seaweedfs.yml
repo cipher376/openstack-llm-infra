@@ -1,0 +1,106 @@
+    - name: Configure Nginx reverse proxy for SeaweedFS
+      copy:
+        dest: /etc/nginx/sites-available/seaweedfs-proxy
+        content: |
+            ################################################################
+            # HTTP → HTTPS redirect (catch‑all for all server names)
+            ################################################################
+            server {
+                listen 80;
+                server_name _;   # matches any domain/IP
+                return 301 https://$host$request_uri;
+            }
+            
+            ################################################################
+            # 1. Filer Interface (SSL)
+            ################################################################
+            server {
+                listen 443 ssl http2;
+                server_name {{ filer_seaweedfs_external_url }};
+            
+                # Self‑signed certificate (shared for testing)
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+            
+                # Recommended SSL settings for testing (adjust if needed)
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+            
+                client_max_body_size 0;
+                proxy_buffering off;
+            
+                location / {
+                    resolver {{ local_dns_IPv4 }} valid=30s;
+                    set $upstream_service "http://{{ seaweedfs_url }}:8888";
+                    proxy_pass $upstream_service;
+            
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;   # now "https"
+                }
+            }
+            
+            ################################################################
+            # 2. Master UI (SSL)
+            ################################################################
+            server {
+                listen 443 ssl http2;
+                server_name {{ master_seaweedfs_external_url }};
+            
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+            
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+            
+                location / {
+                    resolver {{ local_dns_IPv4 }} valid=30s;
+                    set $upstream_service "http://{{ seaweedfs_url }}:9333";
+                    proxy_pass $upstream_service;
+            
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+            }
+            
+            ################################################################
+            # 3. S3 Gateway (SSL)
+            ################################################################
+            server {
+                listen 443 ssl http2;
+                server_name {{ s3_seaweedfs_external_url }};
+            
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+            
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+            
+                client_max_body_size 0;
+                proxy_buffering off;
+            
+                location / {
+                    resolver {{ local_dns_IPv4 }} valid=30s;
+                    set $upstream_service "http://{{ seaweedfs_url }}:8333";
+                    proxy_pass $upstream_service;
+            
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable SeaweedFS proxy site
+      file:
+        src: /etc/nginx/sites-available/seaweedfs-proxy
+        dest: /etc/nginx/sites-enabled/seaweedfs-proxy
+        state: link
+      notify: "nginx config changed"

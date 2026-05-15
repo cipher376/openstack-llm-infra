@@ -1,0 +1,67 @@
+    - name: Configure Services access (Keycloak)
+      copy:
+        dest: /etc/nginx/sites-available/keycloak-proxy
+        content: |
+            # Redirect HTTP → HTTPS
+            server {
+                listen 80;
+                server_name {{ keycloak_external_url }};
+                return 301 https://$host$request_uri;
+            }
+    
+            # HTTPS server block
+            server {
+                listen 443 ssl http2;
+                server_name {{ keycloak_external_url }};
+    
+                # Self‑signed certificate paths (adjust as needed)
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+    
+                # Strong SSL settings
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+    
+                resolver {{ local_dns_IPv4 }} valid=30s;
+    
+                location /admin/ {
+                    set $upstream_service "http://{{ keycloak_url }}:8080";
+                    proxy_pass $upstream_service;
+    
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Forwarded-Proto https;   # now "https"
+    
+                    proxy_buffer_size 128k;
+                    proxy_buffers 4 256k;
+                }
+    
+                location / {
+                    set $upstream_service "http://{{ keycloak_url }}:8080";
+                    proxy_pass $upstream_service;
+    
+                    # Essential headers for Keycloak to identify the original client
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;
+    
+                    # WebSocket support (Required for some UI components)
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "Upgrade";
+    
+                    # Buffer settings to prevent large headers from being rejected
+                    proxy_buffer_size 128k;
+                    proxy_buffers 4 256k;
+                    proxy_busy_buffers_size 256k;
+                }
+            }
+      notify: "nginx config changed"
+    
+    - name: Enable keycloak proxy site
+      file:
+        src: /etc/nginx/sites-available/keycloak-proxy
+        dest: /etc/nginx/sites-enabled/keycloak-proxy
+        state: link
+      notify: "nginx config changed"

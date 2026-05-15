@@ -1,0 +1,35 @@
+---
+- name: Uninstall K3s from Cluster
+  hosts: k3s_servers
+  become: true
+  tags:
+    - k3s-upgrade
+  tasks:
+    - name: Check if K3s uninstall script exists
+      stat:
+        path: /usr/local/bin/k3s-uninstall.sh
+      register: k3s_server_script
+
+    - name: Check if K3s agent uninstall script exists
+      stat:
+        path: /usr/local/bin/k3s-agent-uninstall.sh
+      register: k3s_agent_script
+
+    - name: Run K3s server uninstall script
+      command: /usr/local/bin/k3s-uninstall.sh
+      when: k3s_server_script.stat.exists
+
+    - name: Run K3s agent uninstall script
+      command: /usr/local/bin/k3s-agent-uninstall.sh
+      when: k3s_agent_script.stat.exists
+
+    - name: Remove leftover configuration directories
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/rancher/k3s
+        - /var/lib/rancher/k3s
+        - ~/.kube/config
+
+- import_playbook: k3s_config.yml

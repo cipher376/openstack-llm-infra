@@ -70,10 +70,14 @@
       wait_for_connection:
         delay: 15      # Wait 10s before even trying
         timeout: 300   # Give up after 5 mins
+      delegate_to: k3s-master-01
+
     - name: Wait for cloud-init to finish
       command: cloud-init status --wait
       changed_when: false
       failed_when: false
+      delegate_to: k3s-master-01
+
 
     
 
@@ -253,22 +257,18 @@
 
     - name: Download K3s installation script
       get_url:
-        url: https://get.k3s.io
-        dest: /tmp/k3s-install.sh
+        url: https://github.com/k3s-io/k3s/releases/download/{{ k3s_version }}/k3s
+        dest: /usr/local/bin/k3s
         mode: '0755'
-      when: ansible_host == k3s_master_ip
+    
 
     - name: Execute K3s installation script
-      ansible.builtin.shell: /tmp/k3s-install.sh
+      shell: curl -sfL https://get.k3s.io  | sh -
       environment:
-        INSTALL_K3S_SKIP_ENABLE: "false"
+        INSTALL_K3S_SKIP_ENABLE: "true"
         INSTALL_K3S_VERSION: "{{ k3s_version }}"
         # This ensures the installer knows you want to use the config file
         K3S_CONFIG_FILE: /etc/rancher/k3s/config.yaml 
-      register: k3s_install_result
-      # Use 'creates' to make the task idempotent
-      args:
-        creates: /usr/local/bin/k3s 
       when: ansible_host == k3s_master_ip
 
     - name: Ensure K3s service is started and enabled
@@ -408,32 +408,33 @@
         fail_msg: "K3s token is empty or invalid."
       when: ansible_host != k3s_master_ip
     
-    - name: Check if K3s agent is already installed on worker
-      stat:
-        path: /usr/local/bin/k3s
-      register: k3s_agent_binary
-      when: ansible_host != k3s_master_ip
+    # - name: Check if K3s agent is already installed on worker
+    #   stat:
+    #     path: /usr/local/bin/k3s
+    #   register: k3s_agent_binary
+    #   when: ansible_host != k3s_master_ip
 
-    - name: Download K3s install script on worker
-      get_url:
-        url: https://get.k3s.io
-        dest: /tmp/k3s-install.sh
-        mode: '0755'
-      when:
-        - ansible_host != k3s_master_ip
-        - not (k3s_agent_binary.stat.exists | default(false))
+    # - name: Download K3s install script on worker
+    #   get_url:
+    #     url: https://get.k3s.io
+    #     dest: /tmp/k3s-install.sh
+    #     mode: '0755'
+    #   when:
+    #     - ansible_host != k3s_master_ip
+    #     - not (k3s_agent_binary.stat.exists | default(false))
 
     
     - name: Install K3s agent on worker node
       shell: |
-        INSTALL_K3S_CHANNEL={{ k3s_version }} \
-        K3S_URL="https://{{ k3s_master_ip }}:6443" \
-        K3S_TOKEN="{{ worker_token }}" \
-        INSTALL_K3S_EXEC="agent --node-ip={{ ansible_host }}" \
-        /tmp/k3s-install.sh 
+          curl -sfL https://get.k3s.io | sh -
+      environment:
+        INSTALL_K3S_CHANNEL: "{{ k3s_version }}" 
+        K3S_URL: "https://{{ k3s_master_ip }}:6443" 
+        K3S_TOKEN: "{{ worker_token }}" 
+        INSTALL_K3S_EXEC: "agent --node-ip={{ ansible_host }}" 
+ 
       when:
         - ansible_host != k3s_master_ip
-        - not (k3s_agent_binary.stat.exists | default(false))
       become: true
 
     
@@ -799,116 +800,6 @@
       environment:
         KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       
-
-#===========================================================
-#  CONFIGURE BGP 
-#===========================================================
-    # - name: Gather system facts
-    #   ansible.builtin.setup:
-    #   run_once: true
-  
-
-    # - name: Enable BGP in Cilium ConfigMap
-    #   kubernetes.core.k8s:
-    #     state: patched
-    #     definition:
-    #       apiVersion: v1
-    #       kind: ConfigMap
-    #       metadata:
-    #         name: cilium-config
-    #         namespace: kube-system
-    #       data:
-    #         enable-bgp-control-plane: "true"
-    #   run_once: true
-    #   delegate_to: k3s-master-01
-   
-
-    # - name: Restart Cilium Agent to apply BGP config
-    #   kubernetes.core.k8s:
-    #     state: patched
-    #     kind: DaemonSet
-    #     name: cilium
-    #     namespace: kube-system
-    #     definition:
-    #       spec:
-    #         template:
-    #           metadata:
-    #             annotations:
-    #               restartedAt: "{{ ansible_date_time.iso8601 }}"
-    #   run_once: true
-    #   delegate_to: k3s-master-01
-  
-
-
-    # - name: Get OpenStack router external IP
-    #   openstack.cloud.routers_info:
-    #     name: "{{ router_name }}"
-    #   register: router_info
-    #   delegate_to: localhost
-    #   become: false
-    #   run_once: true
-  
-    
-    # - name: Debug router info structure
-    #   ansible.builtin.debug:
-    #     var: router_info
-    #   run_once: true
-
-    # - name: Extract external IP address
-    #   ansible.builtin.set_fact:
-    #     openstack_router_ip: >-
-    #       {{
-    #         (router_info.routers[0].external_gateway_info.external_fixed_ips | first).ip_address
-    #         if (router_info.routers is defined and router_info.routers | length > 0 and router_info.routers[0].external_gateway_info.external_fixed_ips)
-    #         else ''
-    #       }}
-    #   delegate_to: localhost
-    #   become: false
-    #   run_once: true
-
-
-
-    # - name: Apply Cilium BGP Peering Policy
-    #   kubernetes.core.k8s:
-    #     state: present
-    #     definition:
-    #       apiVersion: "cilium.io/v2alpha1"
-    #       kind: CiliumBGPPeeringPolicy
-    #       metadata:
-    #         name: openstack-bgp-peering
-    #       spec:
-    #         nodeSelector:
-    #           matchLabels:
-    #             kubernetes.io/hostname: k3s-master-01
-    #         virtualRouters:
-    #           - localASN: 65002
-    #             exportPodCIDR: false
-    #             routerID: "10.10.30.5"
-    #             neighbors:
-    #               - peerAddress: "172.16.20.47/32"
-    #                 peerASN: 65001
-    #             serviceSelector:
-    #               matchExpressions:
-    #                 - {key: "io.cilium.gateway/name", operator: Exists}
-    #   delegate_to: k3s-master-01
-    #   run_once: true
-  
- 
-    # - name: Label the Gateway LoadBalancer service for BGP advertisement
-    #   kubernetes.core.k8s:
-    #     state: patched
-    #     definition:
-    #       apiVersion: v1
-    #       kind: Service
-    #       metadata:
-    #         name: cilium-gateway-cilium-gateway
-    #         namespace: cilium-secrets
-    #         labels:
-    #           io.cilium.gateway/name: cilium-gateway
-    #   delegate_to: k3s-master-01
-    #   run_once: true
-    #   environment:
-    #     KUBECONFIG: /etc/rancher/k3s/k3s.yaml
   
 # ------------------------------------------------------------------ #
 #  SECTION 9 — LABEL WORKER NODES (FROM MASTER)                      #
@@ -1082,4 +973,67 @@
         network: "{{ master_port_info.ports[0].network_id }}"
         allowed_address_pairs:
           - ip_address: "{{ cilium_gateway }}"
+          - ip_address: "{{ cilium_istio_gateway }}"
       register: port_update_result
+
+#========================================================
+
+- name: Configure Cilium for coexistence with Istio (Kubeflow)
+  hosts: k3s_master
+  gather_facts: true
+  vars:
+    cilium_namespace: "kube-system"            # Change if Cilium is in another namespace
+    cilium_configmap_name: "cilium-config"
+    cilium_daemonset_name: "cilium"
+    # Desired configuration values
+    bpf_lb_sock_hostns_only: "true"
+    cni_exclusive: "false"
+  tags:
+    - k3s
+    - k3s-cilium-istio-patch
+
+  tasks:
+    - name: Get current ConfigMap
+      kubernetes.core.k8s_info:
+        kind: ConfigMap
+        namespace: "{{ cilium_namespace }}"
+        name: "{{ cilium_configmap_name }}"
+      register: cm
+    
+    - name: Ensure config fields
+      set_fact:
+        updated_data: "{{ cm.resources[0].data | combine({'bpf-lb-sock-hostns-only': bpf_lb_sock_hostns_only, 'cni-exclusive': cni_exclusive}) }}"
+    
+    - name: Apply updated ConfigMap
+      kubernetes.core.k8s:
+        kind: ConfigMap
+        namespace: "{{ cilium_namespace }}"
+        name: "{{ cilium_configmap_name }}"
+        definition:
+          data: "{{ updated_data }}"
+      register: configmap_apply
+
+    - name: Verify Cilium ConfigMap settings
+      kubernetes.core.k8s_info:
+        kind: ConfigMap
+        namespace: "{{ cilium_namespace }}"
+        name: "{{ cilium_configmap_name }}"
+      register: final_cm
+    - name: Show current values
+      debug:
+        msg:
+          - "bpf-lb-sock-hostns-only = {{ final_cm.resources[0].data['bpf-lb-sock-hostns-only'] }}"
+          - "cni-exclusive = {{ final_cm.resources[0].data['cni-exclusive'] }}"
+
+    - name: Restart Cilium DaemonSet
+      kubernetes.core.k8s:
+        kind: DaemonSet
+        namespace: kube-system
+        name: cilium
+        definition:
+          spec:
+            template:
+              metadata:
+                annotations:
+                  kubectl.kubernetes.io/restartedAt: "{{ lookup('pipe', 'date -Iseconds') }}"
+        merge_type: strategic-merge

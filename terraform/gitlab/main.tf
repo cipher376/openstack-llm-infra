@@ -44,7 +44,7 @@ locals {
 
 resource "openstack_compute_instance_v2" "gitlab_server" {
   name            = "gitlab-server"
-  flavor_name     = "m1.medium"             # Equivalent to your 4-core / 8GB RAM
+  flavor_name     = "m1.large"             # Equivalent to your 4-core / 8GB RAM
   key_pair        = "${var.key_pair}"           # Pre-registered OpenStack keypair
   security_groups = ["internal-sg","gitlab-sg"]
   user_data       = local.gitlab_user_data

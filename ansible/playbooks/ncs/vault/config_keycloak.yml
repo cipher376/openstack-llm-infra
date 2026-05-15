@@ -1,0 +1,90 @@
+---
+- name: Deploy Keycloak and PostgreSQL on a single VM
+  hosts: cluster_vault
+  become: yes
+  vars_files:
+    - ../../../../secrets/vault.yml   
+    - ../../../vars.yml
+  vars:
+    # Variables for Keycloak and Postgres
+    docker_compose_dir: /opt/keycloak
+  tags:
+    - keycloak
+  tasks:
+    - name: Install dependencies
+      apt:
+        name:
+          - docker.io
+          - docker-compose-v2
+          - python3-pip
+          - python3-psycopg2
+        state: present
+        update_cache: yes
+
+    - name: Ensure docker service is started
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Create Keycloak directory
+      file:
+        path: "{{ docker_compose_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Create Postgres data directory
+      file:
+        path: "{{ docker_compose_dir }}/postgres_data"
+        state: directory
+        mode: '0755'
+
+    - name: Create docker-compose.yml
+      copy:
+        dest: "{{ docker_compose_dir }}/docker-compose.yml"
+        content: |
+          services:
+            postgres:
+              image: postgres:15
+              container_name: keycloak-postgres
+              environment:
+                POSTGRES_DB: {{ db_name }}
+                POSTGRES_USER: {{ db_user }}
+                POSTGRES_PASSWORD: {{ db_password }}
+              volumes:
+                - ./postgres_data:/var/lib/postgresql/data
+              restart: unless-stopped
+
+            keycloak:
+              image: quay.io/keycloak/keycloak:{{ keycloak_version }}
+              container_name: keycloak
+              command: start-dev
+              environment:
+                KC_HOSTNAME: {{ keycloak_external_url }}
+                KC_PROXY_HEADERS: "xforwarded"
+                KC_HTTP_ENABLED: "true"
+                KC_DB: postgres
+                KC_DB_URL: jdbc:postgresql://postgres:5432/{{ db_name }}
+                KC_DB_USERNAME: {{ db_user }}
+                KC_DB_PASSWORD: {{ db_password }}
+                KEYCLOAK_ADMIN: {{ keycloak_admin }}
+                KEYCLOAK_ADMIN_PASSWORD: {{ keycloak_admin_password }}
+              ports:
+                - "8080:8080"
+              depends_on:
+                - postgres
+              restart: unless-stopped
+              
+    - name: Ensure old Keycloak container is gone
+      community.docker.docker_container:
+        name: keycloak-postgres
+        state: absent
+
+    - name: Start the Services
+      ansible.builtin.shell: "docker compose -f {{ docker_compose_dir }}/docker-compose.yml up -d --force-recreate"
+      async: 600          # Allow up to 10 minutes (prevents the 30s timeout)
+      poll: 10            # Check status every 10 seconds
+      register: docker_up
+      until: docker_up.rc == 0
+      retries: 5          # Retry if the command itself fails
+      delay: 10

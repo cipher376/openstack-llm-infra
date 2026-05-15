@@ -1,0 +1,246 @@
+
+#==========================ArgoCD============================================
+    - name: Configure Services access (ArgoCD)
+      copy:
+        dest: /etc/nginx/sites-available/argocd-proxy
+        content: |
+            # Redirect HTTP → HTTPS
+            server {
+                listen 80;
+                server_name {{ argocd_external_url }};
+                return 301 https://$host$request_uri;
+            }
+
+            # HTTPS server block
+            server {
+                listen 443 ssl http2;
+                server_name {{ argocd_external_url }};
+
+                # Self‑signed certificate paths (adjust as needed)
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+
+                # Strong SSL settings
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+
+                resolver {{ local_dns_IPv4 }} valid=30s;
+
+                location / {
+                    set $upstream_service "http://{{ argocd_url }}";
+                    proxy_pass $upstream_service;
+
+                    # Standard Proxy Headers
+                    proxy_set_header Host {{ argocd_url }};
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                    # This is the "Secret Sauce" for ArgoCD UI/API
+                    proxy_set_header X-Forwarded-Proto $scheme;   # now "https"
+
+                    # WebSocket support (Required for ArgoCD terminal and logs)
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+
+                    proxy_connect_timeout 60s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+
+                    client_max_body_size 10M;
+                }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable argocd proxy site
+      file:
+        src: /etc/nginx/sites-available/argocd-proxy
+        dest: /etc/nginx/sites-enabled/argocd-proxy
+        state: link
+      notify: "nginx config changed"
+
+
+#==========================Hubble============================================
+    - name: Configure Services access (Hubble)
+      copy:
+        dest: /etc/nginx/sites-available/hubble-proxy
+        content: |
+            # Redirect HTTP → HTTPS
+            server {
+                listen 80;
+                server_name {{ hubble_external_url }};
+                return 301 https://$host$request_uri;
+            }
+
+            # HTTPS server block
+            server {
+                listen 443 ssl http2;
+                server_name {{ hubble_external_url }};
+
+                # Self‑signed certificate paths (adjust as needed)
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+
+                # Strong SSL settings
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+
+                resolver {{ local_dns_IPv4 }} valid=30s;
+
+                location / {
+                    set $upstream_service "http://{{ hubble_url }}";
+                    proxy_pass $upstream_service;
+
+                    # Standard Proxy Headers
+                    proxy_set_header Host {{ hubble_url }};
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                    # This is the "Secret Sauce" for Hubble UI/API
+                    proxy_set_header X-Forwarded-Proto $scheme;   # now "https"
+
+                    # WebSocket support
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+
+                    proxy_connect_timeout 60s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+
+                    client_max_body_size 10M;
+                }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable hubble proxy site
+      file:
+        src: /etc/nginx/sites-available/hubble-proxy
+        dest: /etc/nginx/sites-enabled/hubble-proxy
+        state: link
+      notify: "nginx config changed"
+
+
+
+#==========================Grafana============================================
+    - name: Configure Services access (Grafana)
+      copy:
+        dest: /etc/nginx/sites-available/grafana-proxy
+        content: |
+            # Redirect HTTP → HTTPS
+            server {
+                listen 80;
+                server_name {{ grafana_external_url }};
+                return 301 https://$host$request_uri;
+            }
+
+            # HTTPS server block
+            server {
+                listen 443 ssl http2;
+                server_name {{ grafana_external_url }};
+
+                # Self‑signed certificate paths (adjust as needed)
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+
+                # Strong SSL settings
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+
+                resolver {{ local_dns_IPv4 }} valid=30s;
+
+                location / {
+                    set $upstream_service "http://{{ grafana_url }}";
+                    proxy_pass $upstream_service;
+
+                    # Standard Proxy Headers
+                    proxy_set_header Host {{ grafana_url }};
+                    proxy_set_header X-Forwarded-Server $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                    # This is the "Secret Sauce" for Grafana UI/API
+                    proxy_set_header X-Forwarded-Proto $scheme;   # now "https"
+                    proxy_set_header Origin http://{{ grafana_url }};
+
+                    # WebSocket support
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "upgrade";
+
+                    proxy_connect_timeout 60s;
+                    proxy_send_timeout 60s;
+                    proxy_read_timeout 60s;
+
+                    client_max_body_size 10M;
+                }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable grafana proxy site
+      file:
+        src: /etc/nginx/sites-available/grafana-proxy
+        dest: /etc/nginx/sites-enabled/grafana-proxy
+        state: link
+      notify: "nginx config changed"
+
+#==========================Kubeflow============================================
+    - name: Configure Services access (Kubeflow)
+      copy:
+        dest: /etc/nginx/sites-available/kubeflow-proxy
+        content: |
+            # Redirect HTTP → HTTPS
+            server {
+                listen 80;
+                server_name {{ kubeflow_external_url }};
+                return 301 https://$host$request_uri;
+            }
+
+            # HTTPS server block
+            server {
+                listen 443 ssl http2;
+                server_name {{ kubeflow_external_url }};
+
+                # Self‑signed certificate paths (adjust as needed)
+                ssl_certificate     /etc/nginx/ssl/selfsigned/fullchain.pem;
+                ssl_certificate_key /etc/nginx/ssl/selfsigned/privkey.pem;
+
+                # Strong SSL settings
+                ssl_protocols       TLSv1.2 TLSv1.3;
+                ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+                ssl_prefer_server_ciphers on;
+
+                resolver {{ local_dns_IPv4 }} valid=30s;
+
+                location / {
+                    set $upstream_service "http://{{ kubeflow_url }}";
+                    proxy_pass $upstream_service;
+
+                    # Essential headers to maintain the host and original IP information
+                    proxy_set_header Host {{ kubeflow_url }};
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto https;   
+
+                    # WebSocket support (Required for Kubeflow dashboards/notebooks)
+                    proxy_http_version 1.1;
+                    proxy_set_header Upgrade $http_upgrade;
+                    proxy_set_header Connection "Upgrade";
+
+                    # Prevent timeout issues with long-running notebook sessions
+                    proxy_read_timeout 86400;
+                    proxy_send_timeout 86400;
+                }
+            }
+      notify: "nginx config changed"
+
+    - name: Enable kubeflow proxy site
+      file:
+        src: /etc/nginx/sites-available/kubeflow-proxy
+        dest: /etc/nginx/sites-enabled/kubeflow-proxy
+        state: link
+      notify: "nginx config changed" 
+

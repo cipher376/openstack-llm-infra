@@ -1,0 +1,45 @@
+    - name: Define Pi-hole DNS records as a fact
+      ansible.builtin.set_fact:
+        pihole_lan_records: |
+          {{ external_ip }} {{ argocd_external_url }}
+          {{ external_ip }} bastion-server.ncs-cloud.lan
+          {{ external_ip }} {{ pihole_external_url }}
+          {{ external_ip }} {{ wireguard_external_url }}
+          {{ external_ip }} fproxy.ncs-cloud.lan
+          {{ external_ip }} {{ vault_external_url }}
+          {{ external_ip }} {{ gitlab_external_url }}
+          {{ external_ip }} {{ grafana_external_url }}
+          {{ external_ip }} {{ hubble_external_url }}
+          {{ external_ip }} {{ master_seaweedfs_external_url }}
+          {{ external_ip }} prometheus.ncs-cloud.lan
+          {{ external_ip }} {{ s3_seaweedfs_external_url }}
+          {{ external_ip }} {{ uptime_external_url }}
+          {{ external_ip }} {{ kubeflow_external_url }}
+          {{ external_ip }} {{ keycloak_external_url }}
+          {{ cilium_gateway }} {{ argocd_url }}
+          {{ bastion_internal_ip }} bastion-server.internal.ncs-cloud.lan
+          {{ cloud_service_vm_IPv4 }} cloud-services.internal.ncs-cloud.lan
+          {{ cloud_service_vm_IPv4 }} {{ pihole_url }}
+          {{ cloud_service_vm_IPv4 }} {{ wireguard_url }}
+          {{ bastion_internal_ip }} fproxy.internal.ncs-cloud.lan
+          {{ cluster_vault_ipv4 }} {{ vault_url }}
+          {{ cluster_vault_ipv4 }} cluster-vault.internal.ncs-cloud.lan
+          {{ seaweedfs_vm_ipv4 }} filer.seaweedfs.internal.ncs-cloud.lan
+          {{ gitlab_vm_ipv4 }} {{ gitlab_url }}
+          {{ gpu_worker_01_ipv4 }} gpu-worker-01.internal.ncs-cloud.lan
+          {{ cilium_gateway }} {{ grafana_url}}
+          {{ cilium_gateway }} {{ hubble_url }}
+          {{ inference_worker_ipv4 }} inference-worker-01.internal.ncs-cloud.lan
+          {{ k3s_master_01_ipv4 }} k3s-master-01.internal.ncs-cloud.lan
+          {{ k3s_worker_01_ipv4 }} k3s-worker-01.internal.ncs-cloud.lan
+          {{ k3s_worker_02_ipv4 }} k3s-worker-02.internal.ncs-cloud.lan
+          {{ seaweedfs_vm_ipv4 }} master.seaweedfs.internal.ncs-cloud.lan
+          {{ mgmt_vault_ipv4 }} mgmt-vault.internal.ncs-cloud.lan
+          {{ cilium_gateway }} prometheus.internal.ncs-cloud.lan
+          {{ seaweedfs_vm_ipv4 }} s3.seaweedfs.internal.ncs-cloud.lan
+          {{ seaweedfs_vm_ipv4 }} seaweedfs.internal.ncs-cloud.lan
+          {{ cloud_service_vm_IPv4 }} {{ uptime_url }}
+          {{ cilium_istio_gateway }} {{ kubeflow_url }}
+          {{ keycloak_ipv4 }} {{ keycloak_url }}
+    
+    

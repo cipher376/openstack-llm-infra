@@ -175,3 +175,203 @@
                 selfHeal: true
               syncOptions:
                 - CreateNamespace=true
+
+
+- name: Distribute CA and Configure ArgoCD
+  hosts: bastion_server
+  gather_facts: yes
+  become: true
+  vars:
+    ca_cert_local_path: "/tmp/ncs-root-crt.pem"
+  tags:
+    - argocd
+    - run
+  tasks:
+    - name: Fetch CA certificate from Bastion
+      fetch:
+        src: /etc/nginx/ssl/selfsigned/ncs-root-ca.crt
+        dest: "{{ ca_cert_local_path }}"
+        flat: yes
+
+
+- name: Add self‑signed CA to ArgoCD repo‑server
+  hosts: k3s_master          # or your k8s control plane host
+  gather_facts: yes
+  tags:
+    - argocd
+    - run
+  vars:
+    configmap_name: "gitlab-selfsigned-ca"
+    argo_namespace: "argocd"
+    cert_key: "gitlab.ncs-cloud.lan"             # Used as the key inside the ConfigMap
+    deployment_name: "argocd-repo-server"
+    container_name: "argocd-repo-server"
+    mount_path: "/etc/ssl/certs/gitlab-ca"
+    gitlab_ca_cert_content: "{{ hostvars['bastion_server']['gitlab_ca_cert'] }}"
+    ca_cert_local_path: "/tmp/ncs-root-crt.pem"
+
+  tasks:
+
+    - name: Read CA certificate file
+      slurp:
+        src: "{{ ca_cert_local_path }}"
+      register: ca_cert_content
+      delegate_to: localhost
+      become: false
+
+    - name: Copy CA certificate to k3s_master (for ConfigMap creation)
+      copy:
+        content: "{{ ca_cert_content.content | b64decode }}"
+        dest: "/tmp/root_ca.crt"
+      become: yes
+
+    - name: Create or update gitlab repo ConfigMap with CA certificate
+      shell: |
+        kubectl create configmap {{ configmap_name }} -n {{ argo_namespace }} \
+          --from-file={{ cert_key }}=/tmp/root_ca.crt \
+          --dry-run=client -o yaml | kubectl apply -f -
+      register: configmap_result
+      changed_when: "'created' in configmap_result.stdout or 'configured' in configmap_result.stdout"
+
+    
+
+    - name: Check if volume gitlab-ca already exists
+      command: |
+        kubectl get deployment {{ deployment_name }} -n {{ argo_namespace }} \
+          -o jsonpath='{range .spec.template.spec.volumes[*]}{.name}{"\n"}{end}'
+      register: existing_volumes
+      changed_when: false
+
+    - name: Check if volumeMount gitlab-ca already exists
+      command: |
+        kubectl get deployment {{ deployment_name }} -n {{ argo_namespace }} \
+          -o jsonpath='{range .spec.template.spec.containers[0].volumeMounts[*]}{.name}{"\n"}{end}'
+      register: existing_volumeMounts
+      changed_when: false
+
+    - name: Check if env SSL_CERT_DIR already exists
+      command: |
+        kubectl get deployment {{ deployment_name }} -n {{ argo_namespace }} \
+          -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}{"\n"}{end}'
+      register: existing_envs
+      changed_when: false
+
+    - name: Patch deployment to add volume (if missing)
+      command: |
+        kubectl patch deployment {{ deployment_name }} -n {{ argo_namespace }} --type='json' \
+          -p='[{"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "gitlab-ca", "configMap": {"name": "{{ configmap_name }}"}}}]'
+      when: "'gitlab-ca' not in existing_volumes.stdout_lines"
+
+    - name: Patch deployment to add volumeMount (if missing)
+      command: |
+        kubectl patch deployment {{ deployment_name }} -n {{ argo_namespace }} --type='json' \
+          -p='[{"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "gitlab-ca", "mountPath": "{{ mount_path }}", "readOnly": true}}]'
+      when: "'gitlab-ca' not in existing_volumeMounts.stdout_lines"
+
+    - name: Patch deployment to add env (if missing)
+      command: |
+        kubectl patch deployment {{ deployment_name }} -n {{ argo_namespace }} --type='json' \
+          -p='[{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "SSL_CERT_DIR", "value": "{{ mount_path }}"}}]'
+      when: "'SSL_CERT_DIR' not in existing_envs.stdout_lines"
+
+
+    - name: Check if env GIT_SSL_CAINFO already exists
+      command: |
+        kubectl get deployment {{ deployment_name }} -n {{ argo_namespace }} \
+          -o jsonpath='{range .spec.template.spec.containers[0].env[*]}{.name}{"\n"}{end}'
+      register: existing_envs_git
+      changed_when: false
+
+    - name: Patch deployment to add GIT_SSL_CAINFO env (if missing)
+      command: |
+        kubectl patch deployment {{ deployment_name }} -n {{ argo_namespace }} --type='json' \
+          -p='[{"op": "add", "path": "/spec/template/spec/containers/0/env/-", "value": {"name": "GIT_SSL_CAINFO", "value": "/etc/ssl/certs/gitlab-ca/gitlab.ncs-cloud.lan"}}]'
+      when: "'GIT_SSL_CAINFO' not in existing_envs_git.stdout_lines"
+      
+
+
+    - name: Restart deployment to pick up changes
+      command: kubectl rollout restart deployment {{ deployment_name }} -n {{ argo_namespace }}
+      
+
+- name: Inject Keycloak CA certificate into Dex deployment
+  hosts: k3s_master
+  gather_facts: no
+  tags:
+    - argocd
+    - run
+  vars:
+    dex_namespace: "auth"
+    configmap_name: "keycloak-ca"
+    ca_cert_local_path: "/tmp/root-ca.crt"   # Path on control node
+    deployment_name: "dex"
+    container_index: 0
+    mount_path: "/etc/ssl/certs/keycloak-ca"
+    volume_name: "keycloak-ca"
+    env_name: "SSL_CERT_FILE"
+    env_value: "{{ mount_path }}/ca.crt"
+
+  tasks:
+    
+    - name: Create or update Dex-keycloak ConfigMap with CA certificate
+      shell: |
+        kubectl create configmap {{ configmap_name }} -n {{ dex_namespace }} \
+          --from-file=keycloak.ncs-cloud.lan=/tmp/root_ca.crt \
+          --dry-run=client -o yaml | kubectl apply -f -
+      register: configmap_result
+      changed_when: "'created' in configmap_result.stdout or 'configured' in configmap_result.stdout"
+
+
+    # 2. Check if the volume already exists
+    - name: Get existing volumes in deployment
+      command: |
+        kubectl get deployment {{ deployment_name }} -n {{ dex_namespace }} \
+          -o jsonpath='{range .spec.template.spec.volumes[*]}{.name}{"\n"}{end}'
+      register: existing_volumes
+      changed_when: false
+
+    # 3. Add volume if missing
+    - name: Patch deployment to add volume
+      command: |
+        kubectl patch deployment {{ deployment_name }} -n {{ dex_namespace }} --type='json' \
+          -p='[{"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "{{ volume_name }}", "configMap": {"name": "{{ configmap_name }}"}}}]'
+      when: volume_name not in existing_volumes.stdout_lines
+
+    # 4. Check if the volumeMount already exists
+    - name: Get existing volumeMounts in container
+      command: |
+        kubectl get deployment {{ deployment_name }} -n {{ dex_namespace }} \
+          -o jsonpath='{range .spec.template.spec.containers[{{ container_index }}].volumeMounts[*]}{.name}{"\n"}{end}'
+      register: existing_volumeMounts
+      changed_when: false
+
+    # 5. Add volumeMount if missing
+    - name: Patch deployment to add volumeMount
+      command: |
+        kubectl patch deployment {{ deployment_name }} -n {{ dex_namespace }} --type='json' \
+          -p='[{"op": "add", "path": "/spec/template/spec/containers/{{ container_index }}/volumeMounts/-", "value": {"name": "{{ volume_name }}", "mountPath": "{{ mount_path }}", "readOnly": true}}]'
+      when: volume_name not in existing_volumeMounts.stdout_lines
+
+    # 6. Check if the environment variable already exists
+    - name: Get existing env vars in container
+      command: |
+        kubectl get deployment {{ deployment_name }} -n {{ dex_namespace }} \
+          -o jsonpath='{range .spec.template.spec.containers[{{ container_index }}].env[*]}{.name}{"\n"}{end}'
+      register: existing_envs
+      changed_when: false
+
+    # 7. Add environment variable if missing
+    - name: Add SSL_CERT_FILE environment variable to dex deployment
+      command: |
+        kubectl set env deployment/{{ deployment_name }} -n {{ dex_namespace }} \
+          {{ env_name }}={{ env_value }}
+      register: set_env_result
+      changed_when: "'updated' in set_env_result.stdout or 'added' in set_env_result.stdout"
+      failed_when: false   # `set env` returns 0 even if unchanged
+
+
+    # 8. Restart deployment if any patch was applied
+    - name: Restart deployment if changes were made
+      command: kubectl rollout restart deployment {{ deployment_name }} -n {{ dex_namespace }}
+      when:
+        - volume_name not in existing_volumes.stdout_lines or volume_name not in existing_volumeMounts.stdout_lines or env_name not in existing_envs.stdout_lines

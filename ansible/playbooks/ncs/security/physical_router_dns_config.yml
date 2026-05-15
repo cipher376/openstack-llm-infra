@@ -63,19 +63,20 @@
         fi
       vars:    
         dns_records:
-          - { name: 'ncs-cloud.lan', ip: "{{ openstack_vip }}" }
-          - { name: 'gitlab.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'filer.seaweedfs.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'dns.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 's3.seaweedfs.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'master.seaweedfs.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'uptime.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'argocd.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'vault.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'grafana.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'prometheus.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'hubble.ncs-cloud.lan', ip: "{{ external_ip }}" }
-          - { name: 'wireguard.ncs-cloud.lan', ip: "{{ external_ip }}" }
+          - { name: '{{ root_domain }}', ip: "{{ openstack_vip }}" }
+          - { name: '{{ gitlab_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ filer_seaweedfs_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ pihole_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ s3_seaweedfs_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ master_seaweedfs_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ uptime_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ argocd_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ vault_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ grafana_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ hubble_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ wireguard_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ kubeflow_external_url }}', ip: "{{ external_ip }}" }
+          - { name: '{{ keycloak_external_url }}', ip: "{{ external_ip }}" }
       loop: "{{ dns_records }}"
       register: uci_updates
       changed_when: "'changed' in uci_updates.stdout"

@@ -18,6 +18,7 @@
 # Deploy  vaults
 #--------------------------------------------------------------------------------#
 - import_playbook: ansible/playbooks/ncs/vault/config_vault.yml
+- import_playbook: ansible/playbooks/ncs/vault/config_keycloak.yml
 
 
 #--------------------------------------------------------------------------------#
@@ -30,6 +31,7 @@
 #--------------------------------------------------------------------------------#
 # Deploy kubernetes vms
 #--------------------------------------------------------------------------------#
+# - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_upgrade.yml
 - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_config.yml
 - import_playbook: ansible/playbooks/ncs/kubernetes/k3s_vault_config.yml
 

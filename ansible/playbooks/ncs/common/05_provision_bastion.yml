@@ -37,7 +37,7 @@
           ssh_private_key_file: "{{ local_private_key }}"
           key_pair: "{{ default_key_pair }}"
           cloud_service_vm_IPv4: "{{ cloud_service_vm_IPv4 }}"
-          bastion_ipv4: "{{ bastion_insternal_ip }}"
+          bastion_ipv4: "{{ bastion_internal_ip }}"
 
     - name: Get VM details
       openstack.cloud.server_info:
@@ -85,7 +85,15 @@
               IdentityFile ~/.ssh/id_ed25519_cluster
               StrictHostKeyChecking no
 
-
+    - name: Add Bastion public ip to vars
+      ansible.builtin.blockinfile:
+        path: "../../../vars.yml"
+        create: yes
+        mode: '0600'
+        marker: "# {mark} ANSIBLE MANAGED: BASTION PUBLIC_IP"
+        block: |
+          bastion_public_ip: "{{ external_ip }}"
+  
     - name: Dynamically update inventory for the next play
       add_host:
         name: "bastion-server"

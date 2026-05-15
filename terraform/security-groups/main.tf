@@ -266,6 +266,16 @@ resource "openstack_networking_secgroup_rule_v2" "allow_ssh_to_vault" {
   security_group_id = openstack_networking_secgroup_v2.cluster_vault_sg.id
 }
 
+resource "openstack_networking_secgroup_rule_v2" "allow_cloak" {
+  direction         = "ingress"
+  ethertype         = "IPv4"
+  protocol          = "tcp"
+  port_range_min    = 8080
+  port_range_max    = 8080
+  remote_ip_prefix  = "10.10.0.0/16"
+  security_group_id = openstack_networking_secgroup_v2.cluster_vault_sg.id
+}
+
 #==============================================================================
 # KUBERNETES
 #==============================================================================

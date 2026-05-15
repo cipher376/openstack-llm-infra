@@ -7,18 +7,17 @@
   vars_files: 
     - ../../../secrets/vault.yml   
     - ../../../vars.yml   
-  handlers:
-    - name: validate nginx config
-      command: nginx -t
-      listen: "nginx config changed"
-      changed_when: false
+  vars:
+    ssl_dir: /etc/nginx/ssl/selfsigned
+    ca_key: "{{ ssl_dir }}/ncs-root-ca.key"
+    ca_cert: "{{ ssl_dir }}/ncs-root-ca.crt"
+    ca_config: "{{ ssl_dir }}/ncs-root-ca.cnf"
 
-    - name: restart nginx
-      systemd:
-        name: nginx
-        state: restarted
-        enabled: yes
-      listen: "nginx config changed"
+    server_cert: "{{ ssl_dir }}/fullchain.pem"
+    server_key: "{{ ssl_dir }}/privkey.pem"
+    server_csr: "{{ ssl_dir }}/ncs-cloud.csr"
+    server_config: "{{ ssl_dir }}/ncs-cloud.cnf"
+
 
   tasks:
     
@@ -31,262 +30,139 @@
         state: present
         update_cache: yes
 
-#========================GITLAB====================================================
-    
-    - name: Configure Nginx reverse proxy for GitLab
-      copy:
-        dest: /etc/nginx/sites-available/gitlab-proxy
-        content: |
-          server {
-              listen 80;
-              server_name {{ gitlab_external_url }};
-              client_max_body_size 10G;
-
-              location / {
-                  resolver {{ local_dns_IPv4 }} valid=30s;
-                  set $upstream_service "http://{{ gitlab_url }}";
-                  proxy_pass $upstream_service;
-                  # 2. Standard Proxy Headers
-                  proxy_set_header Host $host;
-                  proxy_set_header X-Real-IP $remote_addr;
-                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                  proxy_set_header X-Forwarded-Proto $scheme;
-
-                  # 3. Handle Redirects
-                  # This ensures that if GitLab sends a 302 to its internal IP, 
-                  # Nginx rewrites it to your external domain.
-                  proxy_redirect http://{{ gitlab_url }}/ http://$host/;
-
-                  # 4. Connection Settings for WebSockets (needed for GitLab Terminal/Live logs)
-                  proxy_http_version 1.1;
-                  proxy_set_header Upgrade $http_upgrade;
-                  proxy_set_header Connection "upgrade";
-
-                  # 5. Performance Tuning
-                  proxy_read_timeout 300;
-                  proxy_connect_timeout 300;
-                  proxy_send_timeout 300;
-                  proxy_buffering off;
-              }
-          }
-      notify: "nginx config changed"
-
-    - name: Enable GitLab proxy site
+    - name: Create SSL directory
       file:
-        src: /etc/nginx/sites-available/gitlab-proxy
-        dest: /etc/nginx/sites-enabled/gitlab-proxy
-        state: link
-      notify: "nginx config changed"
+        path: "{{ ssl_dir }}"
+        state: directory
+        mode: '0700'
+
+    # --- STEP 1: CREATE THE ROOT CA ---
+    - name: Create CA Config File
+      copy:
+        dest: "{{ ca_config }}"
+        content: |
+          [ req ]
+          distinguished_name = req_distinguished_name
+          x509_extensions = v3_ca
+          prompt = no
+          [ req_distinguished_name ]
+          CN = NCS Internal Root CA
+          [ v3_ca ]
+          basicConstraints = critical,CA:TRUE
+          keyUsage = critical,keyCertSign,cRLSign
+          subjectKeyIdentifier = hash
+
+    - name: Create Root CA Private Key
+      community.crypto.openssl_privatekey:
+        path: "{{ ca_key }}"
+        size: 4096
+
+    - name: Check if CA certificate already exists
+      stat:
+        path: "{{ ca_cert }}"
+      register: ca_cert_stat
+
+    - name: Generate Root CA Certificate with Extensions
+      shell: |
+        openssl req -x509 -new -nodes \
+          -key {{ ca_key }} \
+          -sha256 -days 3650 \
+          -out {{ ca_cert }} \
+          -extfile {{ ca_config }} \
+          -extensions v3_ca
+      when: not ca_cert_stat.stat.exists
+        
+
+    # --- STEP 2: CREATE SIGNED SERVER CERT ---
+    - name: Create Server Extension Config
+      copy:
+        dest: "{{ server_config }}"
+        content: |
+          [ v3_ca ]
+          authorityKeyIdentifier=keyid,issuer
+          basicConstraints=CA:FALSE
+          keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
+          subjectAltName = @alt_names
+          
+          [alt_names]
+          DNS.1 = ncs-cloud.lan
+          DNS.2 = *.ncs-cloud.lan
+          DNS.3 = localhost
+          IP.1 = 127.0.0.1
+
+    - name: Create Server Private Key
+      community.crypto.openssl_privatekey:
+        path: "{{ server_key }}"
+        size: 2048
+
+    - name: Create Server CSR
+      community.crypto.openssl_csr:
+        path: "{{ server_csr }}"
+        privatekey_path: "{{ server_key }}"
+        common_name: "ncs-cloud.lan"
+        subject_alt_name:
+          - "DNS:ncs-cloud.lan"
+          - "DNS:*.ncs-cloud.lan"
+          - "DNS:localhost"
+          - "IP:127.0.0.1"
+    
+    - name: Check if server certificate exists
+      stat:
+        path: "{{ server_cert }}"
+      register: server_cert_stat
+
+    - name: Sign Server Certificate with CA extensions
+      shell: |
+        openssl x509 -req \
+        -in {{ server_csr }} \
+        -CA {{ ca_cert }} \
+        -CAkey {{ ca_key }} \
+        -CAcreateserial \
+        -out {{ server_cert }} \
+        -days 365 \
+        -sha256 \
+        -extfile {{ server_config }} \
+        -extensions v3_ca
+      when: not server_cert_stat.stat.exists
+
+    - name: Configure Nginx proxy header hash sizes
+      ansible.builtin.lineinfile:
+        path: /etc/nginx/nginx.conf
+        insertafter: 'http {'
+        line: "    {{ item }}"
+        state: present
+      loop:
+        - "proxy_headers_hash_max_size 1024;"
+        - "proxy_headers_hash_bucket_size 128;"
+#========================GITLAB====================================================
+    - name: Configure GitLab proxy
+      include_tasks: "../security/proxy_task/gitlab.yml"
 
 #============================SEAWEEDFS=======================================================
-    - name: Configure Nginx reverse proxy for SeaweedFS
-      copy:
-        dest: /etc/nginx/sites-available/seaweedfs-proxy
-        content: |
-            # 1. Filer Interface (The main data access point)
-              server {
-                  listen 80;
-                  server_name {{ filer_seaweedfs_external_url }};
-
-                  client_max_body_size 0;
-                  proxy_buffering off;
-
-                  location / {
-                      resolver {{ local_dns_IPv4 }} valid=30s;
-                      set $upstream_service "http://{{ seaweedfs_url }}:8888";
-                      proxy_pass $upstream_service;
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Real-IP $remote_addr;
-                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                      proxy_set_header X-Forwarded-Proto $scheme;
-                  }
-              }
-
-              # 2. Master UI (Cluster management)
-              server {
-                  listen 80;
-                  server_name {{ master_seaweedfs_external_url }};
-
-                  location / {
-                      resolver {{ local_dns_IPv4 }} valid=30s;
-                      set $upstream_service "http://{{ seaweedfs_url }}:9333";
-                      proxy_pass $upstream_service;
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Real-IP $remote_addr;
-                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                      proxy_set_header X-Forwarded-Proto $scheme;
-                  }
-              }
-
-              # 3. S3 Gateway (API access for ML tools)
-              server {
-                  listen 80;
-                  server_name {{ s3_seaweedfs_external_url }};
-
-                  client_max_body_size 0;
-                  proxy_buffering off;
-
-                  location / {
-                      resolver {{ local_dns_IPv4 }} valid=30s;
-                      set $upstream_service "http://{{ seaweedfs_url }}:8333";
-                      proxy_pass $upstream_service;
-                      proxy_set_header Host $host;
-                      proxy_set_header X-Real-IP $remote_addr;
-                      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                      proxy_set_header X-Forwarded-Proto $scheme;
-                  }
-              }
-      notify: "nginx config changed"
-
-    - name: Enable SeaweedFS proxy site
-      file:
-        src: /etc/nginx/sites-available/seaweedfs-proxy
-        dest: /etc/nginx/sites-enabled/seaweedfs-proxy
-        state: link
-      notify: "nginx config changed"
+    - name: Configure Seaweedfs proxy
+      include_tasks: "../security/proxy_task/seaweedfs.yml"
 
 #==========================PI-HOLE============================================
-    - name: Configure Services  access (dns, vpn)
-      copy:
-        dest: /etc/nginx/sites-available/pihole-proxy
-        content: |
-          server {
-            listen 80;
-            server_name {{ pihole_external_url }};
-            resolver {{ local_dns_IPv4 }} valid=30s;
-
-            # 1. Immediate redirect from / to /admin/
-            location = / {
-                return 301 /admin/;
-            }
-
-            # 2. Pi-hole Admin Interface
-            location /admin/ {
-                set $upstream_pihole "http://{{ pihole_url }}"; 
-                proxy_pass $upstream_pihole;
-
-                include /etc/nginx/proxy_params;
-
-                # This fixes headers if Pi-hole tries to redirect to its internal IP
-                proxy_redirect http://{{ pihole_url }}/ /;
-                proxy_set_header Host $host;
-            }
-
-            # 3. Handle API and other assets
-            location / {
-                set $upstream_root "http://{{ pihole_url }}";
-                proxy_pass $upstream_root;
-
-                include /etc/nginx/proxy_params;
-                proxy_redirect http://{{ pihole_url }}/ /;
-            }
-
-          }
-      notify: "nginx config changed"
-
-    - name: Enable Pi-hole proxy site
-      file:
-        src: /etc/nginx/sites-available/pihole-proxy
-        dest: /etc/nginx/sites-enabled/pihole-proxy
-        state: link
-      notify: "nginx config changed"
-
+    - name: Configure dns proxy
+      include_tasks: "../security/proxy_task/pihole.yml"
 
 #==========================Up-time============================================
-    - name: Configure Services  access (uptime)
-      copy:
-        dest: /etc/nginx/sites-available/uptime-proxy
-        content: |
-            server {
-            resolver {{ local_dns_IPv4 }} valid=30s;
-            listen 80;
-            server_name {{ uptime_external_url }};
-
-            location / {
-                set $upstream_service "http://{{ uptime_url }}:3001";
-                proxy_pass $upstream_service;
-
-                # WebSocket Support (CRITICAL)
-                proxy_http_version 1.1;
-                proxy_set_header Upgrade $http_upgrade;
-                proxy_set_header Connection "upgrade";
-
-                # Standard Headers
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
-
-                # Timeouts for long-lived WebSocket connections
-                proxy_read_timeout 86400s;
-                proxy_send_timeout 86400s;
-              }
-            }
-      notify: "nginx config changed"
-
-    - name: Enable uptime-kuma proxy site
-      file:
-        src: /etc/nginx/sites-available/uptime-proxy
-        dest: /etc/nginx/sites-enabled/uptime-proxy
-        state: link
-      notify: "nginx config changed"
+    - name: Configure uptime proxy
+      include_tasks: "../security/proxy_task/uptime.yml"
 
 #==========================Vault============================================
-    - name: Configure Services  access (Vault)
-      copy:
-        dest: /etc/nginx/sites-available/vault-proxy
-        content: |
-            server {
-                resolver {{ local_dns_IPv4 }} valid=30s;
-                listen 80;
-                server_name {{ vault_external_url }};
+    - name: Configure vault proxy
+      include_tasks: "../security/proxy_task/vault.yml"
 
-                # 1. Force redirect from the root / to /ui/
-                location = / {
-                    return 301 /ui/;
-                }
-            
-                # 2. Handle all other requests (UI assets and API calls)
-                location / {
-                    # Point to the base URL without the /ui/ suffix
-                    set $upstream_service "http://{{ vault_url }}:8200";
-                    proxy_pass $upstream_service;
-                    proxy_set_header Host $host;
-                    proxy_set_header X-Real-IP $remote_addr;
-                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                    proxy_set_header X-Forwarded-Proto $scheme;
-            
-                    # WebSocket support (Crucial for Vault UI)
-                    proxy_http_version 1.1;
-                    proxy_set_header Upgrade $http_upgrade;
-                    proxy_set_header Connection "upgrade";
-            
-                    # Vault Specifics
-                    proxy_connect_timeout 60s;
-                    proxy_read_timeout 60s;
-                    client_max_body_size 10M;
-            
-                    # Ensure that Nginx correctly handles redirects sent by Vault
-                    proxy_redirect off;
-                }
-            }
-      notify: "nginx config changed"
-
-    - name: Enable vault proxy site
-      file:
-        src: /etc/nginx/sites-available/vault-proxy
-        dest: /etc/nginx/sites-enabled/vault-proxy
-        state: link
-      notify: "nginx config changed"
-      
+#==========================Keycloak============================================
+    - name: Configure keycloak proxy
+      include_tasks: "../security/proxy_task/keycloak.yml"
 
 #==========================K3s_config_task ============================================
     - name: Configure proxy routes for k3s gateway
-      include_tasks: "../security/proxy_k3s_task.yml"
+      include_tasks: "../security/proxy_task/k3s.yml"
 
 #======================================================================================
-
-
     - name: Remove Default Nginx Site
       file:
         path: /etc/nginx/sites-enabled/default
@@ -304,14 +180,24 @@
           http_port 3128
 
     # --- SERVICE MANAGEMENT ---
+    # - name: Restart Nginx and Squid
+    #   systemd:
+    #     name: "{{ item }}"
+    #     state: restarted
+    #     enabled: yes
+    #   loop:
+    #     - nginx
+    #     # - squid
 
-    - name: Restart Nginx and Squid
+  handlers:
+    - name: validate nginx config
+      command: nginx -t
+      listen: "nginx config changed"
+      changed_when: false
+
+    - name: restart nginx
       systemd:
-        name: "{{ item }}"
+        name: nginx
         state: restarted
         enabled: yes
-      loop:
-        - nginx
-        - squid
-
-
+      listen: "nginx config changed"

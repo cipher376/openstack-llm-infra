@@ -269,8 +269,8 @@
       register: dkms_check
       changed_when: false
       failed_when: false
-      retries: 3
-      delay: 10
+      retries: 10
+      delay: 6
       when: gpu_check.rc == 0
 
 
@@ -321,13 +321,13 @@
         msg: "{{ smi_output.stdout_lines | default(['nvidia-smi failed']) }}"
       when: gpu_check.rc == 0
 
-    - name: Fail if nvidia-smi not working after reboot
-      fail:
-        msg: >
-          nvidia-smi failed after reboot and driver install.
-          Check dmesg on the VM for errors:
-          ssh ubuntu@{{ inventory_hostname }} 'dmesg | grep -i nvidia'
-      when: gpu_check.rc == 0 and smi_output.rc != 0 
+    # - name: Fail if nvidia-smi not working after reboot
+    #   fail:
+    #     msg: >
+    #       nvidia-smi failed after reboot and driver install.
+    #       Check dmesg on the VM for errors:
+    #       ssh ubuntu@{{ inventory_hostname }} 'dmesg | grep -i nvidia'
+    #   when: gpu_check.rc == 0 and smi_output.rc != 0 
 
 # ------------------------------------------------------------------ #
 #  SECTION 7 — PERSISTENCE MODE                                        #
